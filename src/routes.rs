@@ -1,86 +1,60 @@
 use axum::{
     extract::State,
-    response::IntoResponse,
     http::StatusCode,
-    Json,
+    response::Json,
 };
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::sync::RwLock;
 
-use crate::models::{AppState, ScanRequest, TogglePayload, ExecMode};
-use crate::logic::scan_triangles;
-use crate::ws_manager;
+use crate::models::{AppState, ScanRequest, TriangularResult};
+use crate::ws_manager::gather_prices_for_exchanges;
 
-type SharedAppState = Arc<TokioRwLock<AppState>>;
-
-/// UI endpoint
-pub async fn ui_handler() -> impl IntoResponse {
+pub async fn ui_handler() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::OK,
         Json(json!({
-            "message": "Triangular WS arbitrage scanner running",
-            "ui": "open index.html at root"
+            "message": "Triangular Arbitrage Scanner (WS) is running",
+            "usage": "POST /scan with { exchanges: [], min_profit: number }"
         })),
     )
 }
 
-/// POST /api/scan
-/// Body: { exchanges: ["binance","bybit"], min_profit: 0.3 }
 pub async fn scan_handler(
-    State(shared_state): State<SharedAppState>,
-    axum::extract::Json(payload): axum::extract::Json<ScanRequest>,
-) -> impl IntoResponse {
-    // gather live prices via ws_manager helper
-    let merged = match ws_manager::gather_prices_for_exchanges(&payload.exchanges).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status":"error","message": format!("failed to gather prices: {}", e)})),
-            );
-        }
-    };
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ScanRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Fetch latest prices from selected exchanges (via WS manager)
+    let merged: Vec<crate::models::PairPrice> =
+        match gather_prices_for_exchanges(&payload.exchanges).await {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "status": "error",
+                        "message": format!("Failed to fetch prices: {}", e),
+                    })),
+                )
+            }
+        };
 
-    // default fee per leg 0.10%
-    let results = scan_triangles(&merged, payload.min_profit, 0.10);
+    // Run arbitrage scan
+    let results: Vec<TriangularResult> =
+        crate::logic::scan_triangles(&merged, payload.min_profit, 0.1);
 
-    // store last results
+    // ✅ Store results in shared state
     {
-        let mut guard = shared_state.write().await;
-        guard.last_results = Some(results.clone());
+        let mut lr = state.last_results.write().await;
+        *lr = Some(results.clone());
     }
 
     (
         StatusCode::OK,
         Json(json!({
-            "status":"success",
+            "status": "success",
             "count": results.len(),
-            "results": results
+            "results": results,
         })),
-    )
-}
-
-/// POST /api/toggle { mode: "live" } or { mode: "scan_once" }
-pub async fn toggle_handler(
-    State(shared_state): State<SharedAppState>,
-    axum::extract::Json(payload): axum::extract::Json<TogglePayload>,
-) -> impl IntoResponse {
-    let mode = match payload.mode.as_str() {
-        "live" => ExecMode::Live,
-        _ => ExecMode::ScanOnce,
-    };
-
-    {
-        let mut guard = shared_state.write().await;
-        // if AppState has an exec_mode field, set it here — adjust AppState accordingly in models.rs
-        // Example: guard.exec_mode = mode;
-        // For now we just keep last_results in state; add exec_mode if you want toggle to change runtime behaviour.
-        let _ = &guard; // no-op to avoid unused variable warning
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({"status":"ok","mode": payload.mode})),
     )
             }
