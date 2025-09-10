@@ -4,41 +4,51 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::models::PairPrice;
-use crate::exchanges;
 
+/// shared prices type: exchange -> Vec<PairPrice>
 pub type SharedPrices = Arc<RwLock<HashMap<String, Vec<PairPrice>>>>;
 
-/// start all exchange WS tasks (non-blocking)
+/// spawn all WS workers (non-blocking). Each worker writes to `prices` keyed by exchange.
 pub async fn start_all_workers(prices: SharedPrices) {
-    // spawn each exchange WS worker; each worker pushes into `prices` map keyed by exchange name
-    // Binance implemented fully; other exchanges are implemented but may need slight parsing tweaks in production.
-    let p1 = prices.clone();
-    tokio::spawn(async move {
-        if let Err(e) = exchanges::binance::run_binance_ws(p1.clone()).await {
-            tracing::error!("binance ws failed: {:?}", e);
-        }
-    });
+    // spawn Binance
+    {
+        let p = prices.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::exchanges::binance::run_binance_ws(p).await {
+                tracing::error!("binance ws failed: {:?}", e);
+            }
+        });
+    }
 
-    let p2 = prices.clone();
-    tokio::spawn(async move {
-        if let Err(e) = exchanges::bybit::run_bybit_ws(p2.clone()).await {
-            tracing::error!("bybit ws failed: {:?}", e);
-        }
-    });
+    // spawn Bybit
+    {
+        let p = prices.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::exchanges::bybit::run_bybit_ws(p).await {
+                tracing::error!("bybit ws failed: {:?}", e);
+            }
+        });
+    }
 
-    let p3 = prices.clone();
-    tokio::spawn(async move {
-        if let Err(e) = exchanges::kucoin::run_kucoin_ws(p3.clone()).await {
-            tracing::error!("kucoin ws failed: {:?}", e);
-        }
-    });
+    // spawn KuCoin
+    {
+        let p = prices.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::exchanges::kucoin::run_kucoin_ws(p).await {
+                tracing::error!("kucoin ws failed: {:?}", e);
+            }
+        });
+    }
 
-    let p4 = prices.clone();
-    tokio::spawn(async move {
-        if let Err(e) = exchanges::gateio::run_gateio_ws(p4.clone()).await {
-            tracing::error!("gateio ws failed: {:?}", e);
-        }
-    });
+    // spawn Gate.io
+    {
+        let p = prices.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::exchanges::gateio::run_gateio_ws(p).await {
+                tracing::error!("gateio ws failed: {:?}", e);
+            }
+        });
+    }
 
-    info!("ws_manager started all workers");
-  }
+    info!("ws_manager: spawned all ws workers");
+                }
