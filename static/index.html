@@ -68,9 +68,7 @@ async function scanNow(){
   render(j.results||[]);
 }
 async function toggleMode(){
-  const mode = document.getElementById('mode').value;
-  await fetch('/api/toggle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
-  alert('Mode toggled to ' + mode);
+  alert('Toggle not implemented in this skeleton — live mode will be added later');
 }
 function render(arr){
   const tbody = document.querySelector('#results tbody');
