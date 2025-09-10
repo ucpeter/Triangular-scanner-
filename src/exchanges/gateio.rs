@@ -1,85 +1,91 @@
-// src/exchanges/gateio.rs
-use futures::{StreamExt, SinkExt};
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 use tracing::{info, warn, error};
-
 use crate::models::PairPrice;
+use crate::ws_manager::SharedPrices;
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
+use chrono::Utc;
 
-pub async fn connect_gateio(tx: tokio::sync::mpsc::Sender<PairPrice>) {
+pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://api.gateio.ws/ws/v4/";
-    let ws_url = Url::parse(url).expect("invalid Gate.io WS url");
+    info!("gateio: connecting to {}", url);
 
-    match connect_async(ws_url).await {
-        Ok((mut ws_stream, _)) => {
-            info!("✅ connected to Gate.io WS");
+    loop {
+        match connect_async(url).await {
+            Ok((mut ws_stream, _)) => {
+                info!("gateio: connected");
 
-            // Subscribe to all spot tickers
-            let sub_msg = serde_json::json!({
-                "time": chrono::Utc::now().timestamp(),
-                "channel": "spot.tickers",
-                "event": "subscribe"
-            });
+                // subscribe to spot.tickers
+                let sub_msg = serde_json::json!({
+                    "time": Utc::now().timestamp_millis(),
+                    "channel":"spot.tickers",
+                    "event":"subscribe",
+                    "payload":[]
+                });
 
-            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
-                error!("❌ failed to subscribe to Gate.io: {}", e);
-                return;
-            }
+                if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                    warn!("gateio subscribe failed: {:?}", e);
+                }
 
-            while let Some(msg) = ws_stream.next().await {
-                match msg {
-                    Ok(Message::Text(txt)) => {
-                        if let Ok(json) = serde_json::from_str::<Value>(&txt) {
-                            if json.get("event") == Some(&Value::String("update".into())) {
-                                if let Some(result) = json.get("result") {
-                                    if let (Some(symbol), Some(price_str)) =
-                                        (result.get("currency_pair"), result.get("last"))
-                                    {
-                                        if let (Some(symbol), Some(price_str)) =
-                                            (symbol.as_str(), price_str.as_str())
-                                        {
-                                            if let Ok(price) = price_str.parse::<f64>() {
-                                                if price > 0.0 {
-                                                    let parts: Vec<&str> =
-                                                        symbol.split('_').collect();
-                                                    if parts.len() == 2 {
-                                                        let _ = tx
-                                                            .send(PairPrice {
-                                                                base: parts[0].to_string(),
-                                                                quote: parts[1].to_string(),
-                                                                price,
-                                                                is_spot: true,
-                                                            })
-                                                            .await;
+                let (_write, mut read) = ws_stream.split();
+                let mut local: HashMap<String, PairPrice> = HashMap::new();
+                let mut last_flush = Instant::now();
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(m) => {
+                            if m.is_text() {
+                                if let Ok(txt) = m.into_text() {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                        if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
+                                            if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
+                                                for it in arr {
+                                                    if let (Some(sym), Some(last)) = (it.get("currency_pair").and_then(|s| s.as_str()), it.get("last").and_then(|s| s.as_f64())) {
+                                                        let parts: Vec<&str> = sym.split('_').collect();
+                                                        if parts.len() == 2 {
+                                                            let base = parts[0].to_string();
+                                                            let quote = parts[1].to_string();
+                                                            let price = last;
+                                                            if price > 0.0 {
+                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            } else if m.is_ping() {
+                                if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
+                                    warn!("gateio tungstenite pong failed: {:?}", e);
+                                }
                             }
                         }
-                    }
-                    Ok(Message::Ping(p)) => {
-                        if let Err(e) = ws_stream.send(Message::Pong(p)).await {
-                            warn!("failed to reply pong to Gate.io: {}", e);
+                        Err(e) => {
+                            error!("gateio ws read error: {:?}", e);
+                            break;
                         }
                     }
-                    Ok(Message::Close(_)) => {
-                        warn!("Gate.io closed connection");
-                        break;
+
+                    if last_flush.elapsed() >= Duration::from_secs(1) {
+                        let mut guard = prices.write().await;
+                        guard.insert("gateio".to_string(), local.values().cloned().collect());
+                        last_flush = Instant::now();
                     }
-                    Err(e) => {
-                        error!("Gate.io WS error: {}", e);
-                        break;
-                    }
-                    _ => {}
                 }
+
+                warn!("gateio disconnected, reconnect in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                error!("gateio connect error: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
-        Err(e) => {
-            error!("❌ gateio connect error: {}", e);
-        }
     }
-                                                    }
+                    }
