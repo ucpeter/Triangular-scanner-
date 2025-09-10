@@ -2,41 +2,38 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>WS Arbitrage Scanner</title>
+  <title>Arbitrage Scanner</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { background:#0b1020; color:#e6eef8; font-family: Inter, system-ui, Arial; margin:0; padding:20px; }
-    .header { display:flex; gap:12px; align-items:center; }
-    .brand { background:#1e88e5; color:#fff; padding:8px 12px; border-radius:6px; font-weight:600; }
-    .controls { display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; }
-    .controls label { display:block; font-size:13px; color:#a8bddc; }
-    input, select { padding:8px; border-radius:6px; border:1px solid #233249; background:#081022; color:#e6eef8; }
-    button { padding:10px 14px; background:#1e88e5; color:white; border:none; border-radius:8px; cursor:pointer; }
-    .table-wrap { margin-top:18px; overflow:auto; border-radius:8px; background:#061026; padding:8px; }
-    table { width:100%; border-collapse:collapse; font-size:13px; color:#dbe9ff; }
-    th { background:#1e88e5; color:#fff; text-align:left; padding:8px; position:sticky; top:0; }
-    td { padding:8px; border-bottom:1px solid #0f2233; }
+    body { background:#071026; color:#dfefff; font-family:Inter,system-ui,Arial; padding:18px; }
+    .brand { background:#1e88e5; padding:6px 10px; border-radius:6px; color:#fff; display:inline-block; font-weight:700; }
+    .controls { display:flex; gap:12px; margin-top:14px; align-items:end; flex-wrap:wrap; }
+    label { display:block; font-size:13px; color:#9fb6da; margin-bottom:6px; }
+    input, select { padding:8px; border-radius:6px; border:1px solid #233249; background:#071a2b; color:#dfefff; }
+    button { padding:10px 14px; background:#1e88e5; border:none; color:#fff; border-radius:8px; cursor:pointer; }
+    .table-wrap { margin-top:18px; overflow:auto; border-radius:8px; background:#061026; padding:8px; height:56vh; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th { background:#1e88e5; color:#fff; padding:8px; position:sticky; top:0; }
+    td { padding:8px; border-bottom:1px solid #0f2233; color:#dfefff; }
     .profit-pos { color:#00d27a; font-weight:600; }
     .profit-neg { color:#ff6b6b; font-weight:600; }
-    @media (max-width:600px) {
-      .controls { flex-direction:column; }
-    }
+    @media (max-width:600px) { .controls { flex-direction:column; } }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="brand">WS Arbitrage Scanner</div>
-    <div style="color:#9fb6da; margin-left:6px;">Fully WebSocket — Live & Scan modes</div>
+  <div>
+    <div class="brand">Arbitrage Scanner</div>
+    <div style="display:inline-block; margin-left:10px; color:#9fb6da;">WebSocket-only • Live & Scan</div>
   </div>
 
   <div class="controls">
     <div>
-      <label>Exchanges (comma-separated)</label>
-      <input id="exchanges" placeholder="e.g. binance,bybit,kucoin,gateio" value="binance,bybit,kucoin,gateio" />
+      <label>Exchanges (comma separated)</label>
+      <input id="exch" value="binance,bybit,kucoin,gateio" />
     </div>
     <div>
-      <label>Min profit %</label>
-      <input id="minprofit" type="number" step="0.01" value="0.3" />
+      <label>Min profit (%)</label>
+      <input id="min" type="number" step="0.01" value="0.3" />
     </div>
     <div>
       <label>Mode</label>
@@ -46,63 +43,45 @@
       </select>
     </div>
     <div style="align-self:end;">
-      <button onclick="doToggle()">Toggle Mode</button>
-      <button onclick="doScan()">Scan</button>
+      <button onclick="toggleMode()">Toggle Mode</button>
+      <button onclick="scanNow()">Scan</button>
     </div>
   </div>
 
-  <div class="table-wrap" style="height:56vh;">
+  <div class="table-wrap">
     <table id="results">
       <thead>
         <tr>
-          <th>#</th>
-          <th>Triangle</th>
-          <th>Pairs</th>
-          <th>Profit Before %</th>
-          <th>Fees %</th>
-          <th>Profit After %</th>
+          <th>#</th><th>Triangle</th><th>Pairs</th><th>Before %</th><th>Fees %</th><th>After %</th>
         </tr>
       </thead>
       <tbody></tbody>
     </table>
   </div>
 
-  <script>
-    async function doScan(){
-      const ex = document.getElementById('exchanges').value.split(',').map(x => x.trim()).filter(x=>x);
-      const min = parseFloat(document.getElementById('minprofit').value) || 0.0;
-      const resp = await fetch('/scan', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ exchanges: ex, min_profit: min })
-      });
-      const json = await resp.json();
-      renderResults(json.results || []);
-    }
-
-    async function doToggle(){
-      const mode = document.getElementById('mode').value;
-      const resp = await fetch('/toggle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ mode })});
-      const json = await resp.json();
-      alert(JSON.stringify(json));
-    }
-
-    function renderResults(results){
-      const tbody = document.querySelector('#results tbody');
-      tbody.innerHTML = '';
-      results.forEach((r,i) => {
-        const tr = document.createElement('tr');
-        const profitClass = r.profit_after >= 0 ? 'profit-pos' : 'profit-neg';
-        tr.innerHTML = `
-          <td>${i+1}</td>
-          <td>${r.triangle}</td>
-          <td style="font-family:monospace">${r.pairs}</td>
-          <td>${r.profit_before.toFixed(4)}</td>
-          <td>${r.fees.toFixed(4)}</td>
-          <td class="${profitClass}">${r.profit_after.toFixed(4)}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-  </script>
+<script>
+async function scanNow(){
+  const exch = document.getElementById('exch').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const min = parseFloat(document.getElementById('min').value)||0.0;
+  const resp = await fetch('/api/scan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ exchanges: exch, min_profit: min })});
+  const j = await resp.json();
+  render(j.results||[]);
+}
+async function toggleMode(){
+  const mode = document.getElementById('mode').value;
+  await fetch('/api/toggle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ mode }) });
+  alert('Mode toggled to ' + mode);
+}
+function render(arr){
+  const tbody = document.querySelector('#results tbody');
+  tbody.innerHTML = '';
+  arr.forEach((r,i)=>{
+    const tr = document.createElement('tr');
+    const cls = r.profit_after >= 0 ? 'profit-pos' : 'profit-neg';
+    tr.innerHTML = `<td>${i+1}</td><td>${r.triangle}</td><td style="font-family:monospace">${r.pairs}</td><td>${r.profit_before.toFixed(4)}</td><td>${r.fees.toFixed(4)}</td><td class="${cls}">${r.profit_after.toFixed(4)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+</script>
 </body>
-  </html>
+</html>
