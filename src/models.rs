@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,20 +11,50 @@ pub struct PairPrice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriangularResult {
-    pub route: String,
-    pub start_amount: f64,
-    pub end_amount: f64,
-    pub profit_percent: f64,
+    pub triangle: String,
+    pub pairs: String,
+    pub profit_before: f64,
+    pub fees: f64,
+    pub profit_after: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScanRequest {
+    pub exchanges: Vec<String>,
+    pub min_profit: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TogglePayload {
+    pub mode: String, // "live" or "scan_once"
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum ExecMode {
-    Live,   // continuous updates from WS
-    OnScan, // only run when user requests
+    ScanOnce,
+    Live,
 }
 
+impl Default for ExecMode {
+    fn default() -> Self {
+        ExecMode::ScanOnce
+    }
+}
+
+/// Shared app state (kept minimal).
 #[derive(Clone)]
 pub struct AppState {
+    /// Execution mode (scan once or live)
     pub mode: Arc<RwLock<ExecMode>>,
-    pub pairs: Arc<RwLock<Vec<PairPrice>>>,
+    /// Last scan results (optional)
+    pub last_results: Arc<RwLock<Option<Vec<TriangularResult>>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState {
+            mode: Arc::new(RwLock::new(ExecMode::default())),
+            last_results: Arc::new(RwLock::new(None)),
+        }
+    }
 }
