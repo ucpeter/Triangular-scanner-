@@ -1,4 +1,4 @@
-use futures_util::{StreamExt};
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -16,7 +16,7 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
                 info!("binance: connected");
-                let (_write, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
 
@@ -42,7 +42,10 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
                                     }
                                 }
                             } else if m.is_ping() {
-                                // ignore; tungstenite handles ping/pong at lower level
+                                // reply with tungstenite-level Pong using write
+                                if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                    warn!("binance write pong failed: {:?}", e);
+                                }
                             }
                         }
                         Err(e) => {
@@ -78,10 +81,9 @@ fn split_symbol(sym: &str) -> (String, String) {
             return (base, suf.to_string());
         }
     }
-    // fallback: last 3 chars as quote
     if s.len() > 3 {
         let (a,b) = s.split_at(s.len()-3);
         return (a.to_string(), b.to_string());
     }
     (String::new(), String::new())
-                                    }
+                                        }
