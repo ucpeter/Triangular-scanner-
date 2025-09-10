@@ -1,49 +1,51 @@
-use axum::{extract::State, response::Json, http::StatusCode};
+use axum::{extract::State, http::StatusCode, response::Json};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-
-use crate::models::{AppState, ScanRequest, ScanResponse, TriangularResult};
-use crate::logic::scan_triangles;
-use crate::ws_manager::gather_prices_for_exchanges;
+use crate::models::{AppState, ScanRequest, TriangularResult};
+use crate::ws_manager;
+use crate::logic;
 
 pub async fn ui_handler() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::OK,
         Json(json!({
-            "message": "Triangular Arbitrage Scanner (WS)",
-            "usage": "POST /scan with { exchanges: [], min_profit: number }"
+            "message": "Triangular WS Arbitrage Scanner running",
+            "usage": "POST /api/scan with { exchanges: [], min_profit: number }"
         })),
     )
 }
 
 pub async fn scan_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<ScanRequest>,
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Json(payload): axum::extract::Json<ScanRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let prices = match gather_prices_for_exchanges(&payload.exchanges).await {
-        Ok(p) => p,
+    // collect current prices for requested exchanges
+    let merged = match ws_manager::gather_prices_for_exchanges(&payload.exchanges).await {
+        Ok(v) => v,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "status": "error", "message": e })),
+                Json(json!({"status":"error","message": format!("gather prices failed: {}", e)})),
             );
         }
     };
 
-    let results: Vec<TriangularResult> = scan_triangles(&prices, payload.min_profit, 0.1);
+    // default fee per leg 0.10%
+    let fee_per_leg = 0.10;
+    let results: Vec<TriangularResult> = logic::scan_triangles(&merged, payload.min_profit, fee_per_leg);
 
+    // store last results
     {
-        let mut guard = state.last_results.write().await;
+        let mut guard = app_state.last_results.write().await;
         *guard = Some(results.clone());
     }
 
     (
         StatusCode::OK,
-        Json(json!(ScanResponse {
-            status: "success".to_string(),
-            count: results.len(),
-            results
+        Json(json!({
+            "status":"success",
+            "count": results.len(),
+            "results": results
         })),
     )
-        }
+}
