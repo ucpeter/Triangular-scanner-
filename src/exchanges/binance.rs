@@ -1,6 +1,7 @@
 use futures_util::{StreamExt};
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use std::collections::HashMap;
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
@@ -27,7 +28,9 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
                                     if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&txt) {
                                         for item in arr {
                                             let sym = item.get("s").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
-                                            let price_opt = item.get("c").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())
+                                            let price_opt = item.get("c")
+                                                .and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok())
                                                 .or_else(|| item.get("c").and_then(|v| v.as_f64()));
                                             if let Some(price) = price_opt {
                                                 let (base, quote) = split_symbol(&sym);
@@ -38,6 +41,8 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
                                         }
                                     }
                                 }
+                            } else if m.is_ping() {
+                                // ignore; tungstenite handles ping/pong at lower level
                             }
                         }
                         Err(e) => {
@@ -47,8 +52,8 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
                     }
 
                     if last_flush.elapsed() >= Duration::from_secs(1) {
-                        let mut g = prices.write().await;
-                        g.insert("binance".to_string(), local.values().cloned().collect());
+                        let mut guard = prices.write().await;
+                        guard.insert("binance".to_string(), local.values().cloned().collect());
                         last_flush = Instant::now();
                     }
                 }
@@ -73,9 +78,10 @@ fn split_symbol(sym: &str) -> (String, String) {
             return (base, suf.to_string());
         }
     }
-    if s.len() > 4 {
+    // fallback: last 3 chars as quote
+    if s.len() > 3 {
         let (a,b) = s.split_at(s.len()-3);
         return (a.to_string(), b.to_string());
     }
     (String::new(), String::new())
-                                            }
+                                    }
