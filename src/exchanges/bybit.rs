@@ -1,34 +1,32 @@
-use futures::StreamExt;
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
 use tokio_tungstenite::connect_async;
-use tracing::{info, warn, error};
-
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
+use tracing::{info, warn, error};
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
 
-/// Bybit: wss://stream.bybit.com/v5/public/spot
-/// We'll subscribe to "tickers" topic.
 pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://stream.bybit.com/v5/public/spot";
     info!("bybit: connecting to {}", url);
 
     loop {
         match connect_async(url).await {
-            Ok((mut ws, _)) => {
-                info!("bybit: connected, sending subscribe");
+            Ok((mut ws_stream, _)) => {
+                info!("bybit: connected");
                 // subscribe to tickers
                 let sub = serde_json::json!({
                     "op": "subscribe",
                     "args": ["tickers"]
                 });
-                if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-                    warn!("bybit: subscribe send failed: {:?}", e);
+                if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+                    warn!("bybit subscribe send failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws.split();
+                let (_write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
-                let mut last_flush = tokio::time::Instant::now();
+                let mut last_flush = Instant::now();
 
                 while let Some(msg) = read.next().await {
                     match msg {
@@ -46,7 +44,7 @@ pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error
                                                         if let Some(price) = price_opt {
                                                             let (base, quote) = split_symbol(&sym);
                                                             if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                                local.insert(sym.clone(), PairPrice { base, quote, price });
+                                                                local.insert(sym.clone(), PairPrice { base, quote, price, is_spot: true });
                                                             }
                                                         }
                                                     }
@@ -56,21 +54,21 @@ pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error
                                     }
                                 }
                             }
-
-                            if last_flush.elapsed() >= Duration::from_secs(1) {
-                                let mut guard = prices.write().await;
-                                guard.insert("bybit".to_string(), local.values().cloned().collect());
-                                last_flush = tokio::time::Instant::now();
-                            }
                         }
                         Err(e) => {
                             error!("bybit ws read error: {:?}", e);
                             break;
                         }
                     }
+
+                    if last_flush.elapsed() >= Duration::from_secs(1) {
+                        let mut g = prices.write().await;
+                        g.insert("bybit".to_string(), local.values().cloned().collect());
+                        last_flush = Instant::now();
+                    }
                 }
 
-                warn!("bybit: disconnected, reconnect in 2s");
+                warn!("bybit disconnected, reconnect in 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
@@ -90,4 +88,4 @@ fn split_symbol(sym: &str) -> (String, String) {
         }
     }
     (String::new(), String::new())
-                            }
+                                            }
