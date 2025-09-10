@@ -1,36 +1,35 @@
-use futures::StreamExt;
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
 use tokio_tungstenite::connect_async;
 use tracing::{info, warn, error};
-
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
 
-/// KuCoin: in production you should call the REST `bullet-public` to obtain a temporary WS endpoint and token.
-/// For simplicity, we connect to the public endpoint and attempt to subscribe to "/market/ticker:all".
-/// If you get auth errors, switch to the bullet-public flow (comment included).
+/// NOTE: KuCoin production uses bullet-public to get a temporary WS endpoint. This simplified flow tries to connect
+/// to ws://ws-api.kucoin.com/endpoint but may require the bullet flow in production.
 pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://ws-api.kucoin.com/endpoint";
     info!("kucoin: connecting to {}", url);
 
     loop {
         match connect_async(url).await {
-            Ok((mut ws, _)) => {
-                info!("kucoin: connected, subscribing (topic /market/ticker:all)");
+            Ok((mut ws_stream, _)) => {
+                info!("kucoin: connected, attempting subscribe");
                 let sub = serde_json::json!({
-                    "id": "sub_all",
+                    "id": "1",
                     "type": "subscribe",
                     "topic": "/market/ticker:all",
                     "response": true
                 });
-                if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-                    warn!("kucoin: subscribe failed: {:?}", e);
+                if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+                    warn!("kucoin subscribe failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws.split();
+                let (_write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
-                let mut last_flush = tokio::time::Instant::now();
+                let mut last_flush = Instant::now();
 
                 while let Some(msg) = read.next().await {
                     match msg {
@@ -47,7 +46,7 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                                         if let Some(price) = price_opt {
                                                             let (base, quote) = split_symbol(sym);
                                                             if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price });
+                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
                                                             }
                                                         }
                                                     }
@@ -57,21 +56,21 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                     }
                                 }
                             }
-
-                            if last_flush.elapsed() >= Duration::from_secs(1) {
-                                let mut guard = prices.write().await;
-                                guard.insert("kucoin".to_string(), local.values().cloned().collect());
-                                last_flush = tokio::time::Instant::now();
-                            }
                         }
                         Err(e) => {
                             error!("kucoin ws read error: {:?}", e);
                             break;
                         }
                     }
+
+                    if last_flush.elapsed() >= Duration::from_secs(1) {
+                        let mut g = prices.write().await;
+                        g.insert("kucoin".to_string(), local.values().cloned().collect());
+                        last_flush = Instant::now();
+                    }
                 }
 
-                warn!("kucoin: disconnected, reconnect in 2s");
+                warn!("kucoin disconnected, reconnect in 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
@@ -90,4 +89,4 @@ fn split_symbol(sym: &str) -> (String, String) {
         }
     }
     (String::new(), String::new())
-                                            }
+            }
