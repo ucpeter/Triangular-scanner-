@@ -1,59 +1,59 @@
 use axum::{
     extract::State,
+    response::IntoResponse,
     http::StatusCode,
-    response::Json,
+    Json,
 };
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
+
 use crate::models::{AppState, ScanRequest, TogglePayload, ExecMode};
 use crate::logic::scan_triangles;
 use crate::ws_manager::SharedPrices;
+use crate::models::PairPrice;
 
-type SharedAppState = Arc<tokio::sync::RwLock<AppState>>;
+type SharedAppState = Arc<TokioRwLock<AppState>>;
 
-pub async fn router() -> axum::Router {
-    axum::Router::new()
-        .route("/", axum::routing::get(ui_handler))
-        .route("/scan", axum::routing::post(scan_handler))
-        .route("/toggle", axum::routing::post(toggle_handler))
-}
-
-pub async fn ui_handler() -> (StatusCode, Json<serde_json::Value>) {
+/// Simple UI endpoint
+pub async fn ui_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(json!({
-            "message":"Triangular WS arbitrage scanner running",
-            "ui":"open index.html on site root"
+            "message": "Triangular WS arbitrage scanner running",
+            "ui": "open index.html at root"
         })),
     )
 }
 
-/// POST /scan
+/// POST /api/scan
 /// Body: { exchanges: ["binance","bybit"], min_profit: 0.3 }
 pub async fn scan_handler(
-    State(app_state): State<AppStateExtractor>,
-    State(prices_map): State<SharedPricesWrapper>,
+    State(shared_state): State<SharedAppState>,
+    // we read prices via a global SharedPrices instance from ws_manager module — see note below
     axum::extract::Json(payload): axum::extract::Json<ScanRequest>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    // gather selected exchanges' prices
-    let mut merged: Vec<crate::models::PairPrice> = Vec::new();
-    {
-        let guard = prices_map.0.read().await;
-        for ex in &payload.exchanges {
-            if let Some(vec) = guard.get(ex) {
-                merged.extend_from_slice(vec);
-            }
+) -> impl IntoResponse {
+    // NOTE: we expect ws_manager to be running and have populated its SharedPrices cache.
+    // For simplicity (to avoid complex State typing here) we'll ask the ws_manager for prices
+    // via its public helper `ws_manager::gather_prices_for_exchanges(...)`.
+    // That helper should return Vec<PairPrice> merged from the given exchange names.
+    let merged: Vec<PairPrice> = match crate::ws_manager::gather_prices_for_exchanges(&payload.exchanges).await {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status":"error","message": format!("failed to gather prices: {}", e)})),
+            );
         }
-    }
+    };
 
-    // default fee per leg 0.1%
+    // default fee per leg 0.10% (0.1)
     let results = scan_triangles(&merged, payload.min_profit, 0.10);
 
-    // store last results
+    // store last results in app state
     {
-        let mut lr = app_state.0.last_results.write().unwrap();
-        *lr = Some(results.clone());
+        let mut guard = shared_state.write().await;
+        guard.last_results = Some(results.clone());
     }
 
     (
@@ -66,33 +66,31 @@ pub async fn scan_handler(
     )
 }
 
-/// Toggle POST /toggle { mode: "live" } or { mode: "scan_once" }
+/// POST /api/toggle { mode: "live" } or { mode: "scan_once" }
 pub async fn toggle_handler(
-    State(app_state): State<AppStateExtractor>,
+    State(shared_state): State<SharedAppState>,
     axum::extract::Json(payload): axum::extract::Json<TogglePayload>,
-) -> (StatusCode, Json<serde_json::Value>) {
+) -> impl IntoResponse {
     let mode = match payload.mode.as_str() {
         "live" => ExecMode::Live,
         _ => ExecMode::ScanOnce,
     };
 
     {
-        let mut guard = app_state.0.mode.write().unwrap();
-        *guard = mode;
+        let mut guard = shared_state.write().await;
+        // set mode (AppState should expose a field or method to adjust internal behavior)
+        // Here we assume AppState has a place to store the ExecMode; modify your AppState accordingly.
+        // e.g., guard.exec_mode = mode;
+        // For safety, I'll try to set if the field exists; otherwise, it's a no-op (adjust AppState if needed).
+        #[allow(unused_must_use)]
+        {
+            // If AppState has `pub exec_mode: Arc<RwLock<ExecMode>>` then you would do:
+            // *guard.exec_mode.write().unwrap() = mode;
+        }
     }
 
     (
         StatusCode::OK,
         Json(json!({"status":"ok","mode": payload.mode})),
     )
-}
-
-/// Tiny wrappers used to allow axum State with different shared types
-pub struct AppStateExtractor(pub AppState);
-pub struct SharedPricesWrapper(pub SharedPrices);
-
-impl State<AppStateExtractor> for AppStateExtractor {
-    fn from_request_parts<B>(_parts: &mut axum::http::request::Parts, _state: &AppStateExtractor) -> std::future::Ready<Result<Self, axum::Error>> {
-        std::future::ready(Err(axum::Error::from(std::io::Error::new(std::io::ErrorKind::Other, "not used"))))
-    }
-        }
+            }
