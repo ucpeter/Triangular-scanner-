@@ -1,37 +1,35 @@
-use futures::StreamExt;
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
 use tokio_tungstenite::connect_async;
-use tracing::{info, warn, error};
-
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
+use tracing::{info, warn, error};
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
 
-/// Gate.io: wss://ws.gateio.ws/v4/ws
-/// Subscribe to channel "spot.tickers".
+/// gateio ws. This subscribes to spot.tickers channel
 pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://ws.gateio.ws/v4/ws";
     info!("gateio: connecting to {}", url);
 
     loop {
         match connect_async(url).await {
-            Ok((mut ws, _)) => {
-                info!("gateio connected, subscribing spot.tickers");
+            Ok((mut ws_stream, _)) => {
+                info!("gateio: connected, subscribing");
+                // subscribe channel
                 let sub = serde_json::json!({
-                    "time": chrono::Utc::now().timestamp_millis(),
+                    "time": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64),
                     "channel":"spot.tickers",
                     "event":"subscribe",
-                    "payload": []
+                    "payload":[]
                 });
-                // This file uses chrono for timestamp; chrono is not in Cargo.toml earlier —
-                // if build fails, replace with simple timestamp: chrono::Utc::now().timestamp_millis()
-                if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-                    warn!("gateio: subscribe send failed: {:?}", e);
+                if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+                    warn!("gateio subscribe failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws.split();
+                let (_write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
-                let mut last_flush = tokio::time::Instant::now();
+                let mut last_flush = Instant::now();
 
                 while let Some(msg) = read.next().await {
                     match msg {
@@ -42,11 +40,14 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                         if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
                                             if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
                                                 for it in arr {
-                                                    if let (Some(sym), Some(last)) = (it.get("currency_pair").and_then(|s| s.as_str()), it.get("last").and_then(|s| s.as_str())) {
-                                                        if let Ok(price) = last.parse::<f64>() {
-                                                            let parts: Vec<&str> = sym.split('_').collect();
-                                                            if parts.len() == 2 && price > 0.0 {
-                                                                local.insert(sym.to_uppercase(), PairPrice { base: parts[0].to_string(), quote: parts[1].to_string(), price });
+                                                    if let (Some(sym), Some(last)) = (it.get("currency_pair").and_then(|s| s.as_str()), it.get("last").and_then(|s| s.as_f64())) {
+                                                        let parts: Vec<&str> = sym.split('_').collect();
+                                                        if parts.len() == 2 {
+                                                            let base = parts[0].to_string();
+                                                            let quote = parts[1].to_string();
+                                                            let price = last;
+                                                            if price > 0.0 {
+                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
                                                             }
                                                         }
                                                     }
@@ -56,21 +57,21 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                     }
                                 }
                             }
-
-                            if last_flush.elapsed() >= Duration::from_secs(1) {
-                                let mut guard = prices.write().await;
-                                guard.insert("gateio".to_string(), local.values().cloned().collect());
-                                last_flush = tokio::time::Instant::now();
-                            }
                         }
                         Err(e) => {
                             error!("gateio ws read error: {:?}", e);
                             break;
                         }
                     }
+
+                    if last_flush.elapsed() >= Duration::from_secs(1) {
+                        let mut g = prices.write().await;
+                        g.insert("gateio".to_string(), local.values().cloned().collect());
+                        last_flush = Instant::now();
+                    }
                 }
 
-                warn!("gateio: disconnected, reconnect 2s");
+                warn!("gateio disconnected, reconnect in 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
@@ -79,4 +80,4 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
             }
         }
     }
-                    }
+                        }
