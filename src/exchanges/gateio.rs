@@ -31,7 +31,7 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                     warn!("gateio subscribe failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
 
@@ -61,8 +61,8 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                     }
                                 }
                             } else if m.is_ping() {
-                                if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
-                                    warn!("gateio tungstenite pong failed: {:?}", e);
+                                if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                    warn!("gateio write pong failed: {:?}", e);
                                 }
                             }
                         }
@@ -88,4 +88,4 @@ pub async fn run_gateio_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
             }
         }
     }
-                    }
+                                                                }
