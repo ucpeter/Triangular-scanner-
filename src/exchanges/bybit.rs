@@ -1,76 +1,93 @@
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
+use std::{collections::HashMap, time::Duration};
 use tokio_tungstenite::connect_async;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
 
-/// Bybit aggregated tickers: wss://stream.bybit.com/v5/public/spot
-/// We subscribe to "tickers" to receive continuous updates for spot market.
-/// Note: Bybit messages sometimes come with {"topic":"tickers", "data":[ ... ] }
+/// Bybit: wss://stream.bybit.com/v5/public/spot
+/// We'll subscribe to "tickers" topic.
 pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://stream.bybit.com/v5/public/spot";
-    info!("connecting to Bybit WS {}", url);
-    let (mut ws, _) = connect_async(url).await?;
-    // subscribe to all tickers
-    let subscribe = serde_json::json!({
-        "op": "subscribe",
-        "args": ["tickers"]
-    });
-    ws.send(tokio_tungstenite::tungstenite::Message::Text(subscribe.to_string())).await?;
+    info!("bybit: connecting to {}", url);
 
-    let mut local_map: HashMap<String, PairPrice> = HashMap::new();
+    loop {
+        match connect_async(url).await {
+            Ok((mut ws, _)) => {
+                info!("bybit: connected, sending subscribe");
+                // subscribe to tickers
+                let sub = serde_json::json!({
+                    "op": "subscribe",
+                    "args": ["tickers"]
+                });
+                if let Err(e) = ws.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
+                    warn!("bybit: subscribe send failed: {:?}", e);
+                }
 
-    let (_ws_write, mut read) = ws.split();
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if msg.is_text() {
-            let text = msg.into_text()?;
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                // Typical shape: {"topic":"tickers","data":[{"symbol":"BTCUSDT","lastPrice":"30000", ...}, ...], "ts":...}
-                if let Some(topic) = v.get("topic").and_then(|t| t.as_str()) {
-                    if topic == "tickers" {
-                        if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
-                            for it in arr {
-                                let sym = it.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_uppercase();
-                                let price_opt = it.get("lastPrice").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
-                                    .or_else(|| it.get("lastPrice").and_then(|p| p.as_f64()));
-                                if let Some(price) = price_opt {
-                                    // split by known suffixes (same logic as Binance)
-                                    let (base, quote) = split_symbol(sym.as_str());
-                                    if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                        local_map.insert(sym.clone(), PairPrice { base, quote, price });
+                let (_write, mut read) = ws.split();
+                let mut local: HashMap<String, PairPrice> = HashMap::new();
+                let mut last_flush = tokio::time::Instant::now();
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(m) => {
+                            if m.is_text() {
+                                if let Ok(txt) = m.into_text() {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                        if let Some(topic) = v.get("topic").and_then(|t| t.as_str()) {
+                                            if topic == "tickers" {
+                                                if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                                                    for it in arr {
+                                                        let sym = it.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_uppercase();
+                                                        let price_opt = it.get("lastPrice").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
+                                                            .or_else(|| it.get("lastPrice").and_then(|p| p.as_f64()));
+                                                        if let Some(price) = price_opt {
+                                                            let (base, quote) = split_symbol(&sym);
+                                                            if !base.is_empty() && !quote.is_empty() && price > 0.0 {
+                                                                local.insert(sym.clone(), PairPrice { base, quote, price });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
 
-                            // flush to shared
-                            let mut guard = prices.write().await;
-                            guard.insert("bybit".to_string(), local_map.values().cloned().collect());
+                            if last_flush.elapsed() >= Duration::from_secs(1) {
+                                let mut guard = prices.write().await;
+                                guard.insert("bybit".to_string(), local.values().cloned().collect());
+                                last_flush = tokio::time::Instant::now();
+                            }
+                        }
+                        Err(e) => {
+                            error!("bybit ws read error: {:?}", e);
+                            break;
                         }
                     }
-                } else {
-                    // Bybit could also send heartbeat/other messages
                 }
-            } else {
-                warn!("bybit: failed to parse ws message as json (first 80 chars): {}", &text.chars().take(80).collect::<String>());
+
+                warn!("bybit: disconnected, reconnect in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                error!("bybit connect error: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
     }
-
-    Ok(())
 }
 
 fn split_symbol(sym: &str) -> (String, String) {
-    let suffixes = ["USDT", "USDC", "BTC", "ETH"];
-    for s in &suffixes {
-        if sym.ends_with(s) && sym.len() > s.len() {
-            let base = sym.trim_end_matches(s).to_string();
-            return (base, s.to_string());
+    let suffixes = ["USDT","USDC","BTC","ETH"];
+    for suf in &suffixes {
+        if sym.ends_with(suf) && sym.len() > suf.len() {
+            let base = sym[..sym.len()-suf.len()].to_string();
+            return (base, suf.to_string());
         }
     }
     (String::new(), String::new())
-      }
+                            }
