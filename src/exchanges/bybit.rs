@@ -1,100 +1,100 @@
-// src/exchanges/bybit.rs
-use futures::{StreamExt, SinkExt};
+use futures_util::{StreamExt, SinkExt};
 use serde_json::Value;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use url::Url;
-use tracing::{info, warn, error};
-
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::models::PairPrice;
+use crate::ws_manager::SharedPrices;
+use tracing::{info, warn, error};
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
 
-pub async fn connect_bybit(tx: tokio::sync::mpsc::Sender<PairPrice>) {
+pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://stream.bybit.com/v5/public/spot";
-    info!("connecting to Bybit WS: {}", url);
+    info!("bybit: connecting to {}", url);
 
-    let ws_url = Url::parse(url).expect("invalid Bybit WS url");
+    loop {
+        match connect_async(url).await {
+            Ok((mut ws_stream, _)) => {
+                info!("bybit: connected");
 
-    match connect_async(ws_url).await {
-        Ok((mut ws_stream, _)) => {
-            info!("✅ connected to Bybit");
+                // subscribe to tickers (all)
+                let sub = serde_json::json!({
+                    "op": "subscribe",
+                    "args": ["tickers"]
+                });
+                if let Err(e) = ws_stream.send(Message::Text(sub.to_string())).await {
+                    warn!("bybit subscribe send failed: {:?}", e);
+                }
 
-            // Subscribe to tickers stream for ALL pairs
-            // You can dynamically build the args, for now subscribe to "tickers" (all)
-            let sub_msg = serde_json::json!({
-                "op": "subscribe",
-                "args": ["tickers"]
-            });
+                let (_write, mut read) = ws_stream.split();
+                let mut local: HashMap<String, PairPrice> = HashMap::new();
+                let mut last_flush = Instant::now();
 
-            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
-                error!("❌ failed to send subscription to Bybit: {}", e);
-                return;
-            }
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(m) => {
+                            if m.is_text() {
+                                if let Ok(txt) = m.into_text() {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                        // handle op ping/pong (Bybit sends {"op":"ping"})
+                                        if let Some(op) = v.get("op").and_then(|x| x.as_str()) {
+                                            if op == "ping" {
+                                                let _ = ws_stream.send(Message::Text(serde_json::json!({"op":"pong"}).to_string())).await;
+                                                continue;
+                                            }
+                                        }
 
-            while let Some(msg) = ws_stream.next().await {
-                match msg {
-                    Ok(Message::Text(txt)) => {
-                        if let Ok(json) = serde_json::from_str::<Value>(&txt) {
-                            // Handle pings
-                            if json.get("op") == Some(&Value::String("ping".to_string())) {
-                                let pong = serde_json::json!({ "op": "pong" });
-                                if let Err(e) = ws_stream.send(Message::Text(pong.to_string())).await {
-                                    warn!("failed to reply pong to Bybit: {}", e);
-                                }
-                                continue;
-                            }
-
-                            // Parse tickers
-                            if let Some(obj) = json.get("data") {
-                                if let (Some(symbol), Some(price_str)) =
-                                    (obj.get("symbol"), obj.get("lastPrice"))
-                                {
-                                    if let (Some(symbol), Some(price_str)) =
-                                        (symbol.as_str(), price_str.as_str())
-                                    {
-                                        if let Ok(price) = price_str.parse::<f64>() {
-                                            if price > 0.0 {
-                                                let (base, quote) = split_symbol(symbol);
-                                                if !base.is_empty() && !quote.is_empty() {
-                                                    let _ = tx.send(PairPrice {
-                                                        base,
-                                                        quote,
-                                                        price,
-                                                        is_spot: true,
-                                                    }).await;
+                                        // tickers arrive under { "topic":"tickers", "data":[...] }
+                                        if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
+                                            if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                                                for it in arr {
+                                                    let sym = it.get("symbol").and_then(|s| s.as_str()).unwrap_or("").to_uppercase();
+                                                    let price_opt = it.get("lastPrice").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
+                                                        .or_else(|| it.get("lastPrice").and_then(|p| p.as_f64()));
+                                                    if let Some(price) = price_opt {
+                                                        let (base, quote) = split_symbol(&sym);
+                                                        if !base.is_empty() && !quote.is_empty() && price > 0.0 {
+                                                            local.insert(sym.clone(), PairPrice { base, quote, price, is_spot: true });
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            } else if m.is_ping() {
+                                // respond at tungstenite level
+                                if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
+                                    warn!("bybit tungstenite pong failed: {:?}", e);
+                                }
                             }
                         }
-                    }
-                    Ok(Message::Ping(_)) => {
-                        // Reply tungstenite-level ping
-                        if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
-                            warn!("failed to reply tungstenite pong: {}", e);
+                        Err(e) => {
+                            error!("bybit ws read error: {:?}", e);
+                            break;
                         }
                     }
-                    Ok(Message::Close(_)) => {
-                        warn!("Bybit closed connection");
-                        break;
+
+                    if last_flush.elapsed() >= Duration::from_secs(1) {
+                        let mut guard = prices.write().await;
+                        guard.insert("bybit".to_string(), local.values().cloned().collect());
+                        last_flush = Instant::now();
                     }
-                    Err(e) => {
-                        error!("Bybit WS error: {}", e);
-                        break;
-                    }
-                    _ => {}
                 }
+
+                warn!("bybit disconnected, reconnect in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-        }
-        Err(e) => {
-            error!("❌ bybit connect error: {}", e);
+            Err(e) => {
+                error!("bybit connect error: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
         }
     }
 }
 
-/// Split Bybit symbols into base/quote
 fn split_symbol(symbol: &str) -> (String, String) {
-    let suffixes = ["USDT", "USDC", "BTC", "ETH"];
+    let suffixes = ["USDT","USDC","BTC","ETH"];
     for s in suffixes {
         if symbol.ends_with(s) && symbol.len() > s.len() {
             let base = symbol.trim_end_matches(s).to_string();
@@ -102,4 +102,4 @@ fn split_symbol(symbol: &str) -> (String, String) {
         }
     }
     (String::new(), String::new())
-            }
+                                                        }
