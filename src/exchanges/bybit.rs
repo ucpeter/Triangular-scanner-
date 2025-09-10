@@ -26,7 +26,7 @@ pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error
                     warn!("bybit subscribe send failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
 
@@ -39,7 +39,7 @@ pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error
                                         // handle op ping/pong (Bybit sends {"op":"ping"})
                                         if let Some(op) = v.get("op").and_then(|x| x.as_str()) {
                                             if op == "ping" {
-                                                let _ = ws_stream.send(Message::Text(serde_json::json!({"op":"pong"}).to_string())).await;
+                                                let _ = write.send(Message::Text(serde_json::json!({"op":"pong"}).to_string())).await;
                                                 continue;
                                             }
                                         }
@@ -63,9 +63,9 @@ pub async fn run_bybit_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error
                                     }
                                 }
                             } else if m.is_ping() {
-                                // respond at tungstenite level
-                                if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
-                                    warn!("bybit tungstenite pong failed: {:?}", e);
+                                // respond at tungstenite level using write
+                                if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                    warn!("bybit write pong failed: {:?}", e);
                                 }
                             }
                         }
@@ -102,4 +102,4 @@ fn split_symbol(symbol: &str) -> (String, String) {
         }
     }
     (String::new(), String::new())
-                                                        }
+                                                                                                 }
