@@ -1,55 +1,90 @@
-use futures_util::{StreamExt, SinkExt};
+// src/exchanges/kucoin.rs
+use futures::{StreamExt, SinkExt};
 use serde_json::Value;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use url::Url;
 use tracing::{info, warn, error};
+use reqwest::Client;
+
 use crate::models::PairPrice;
-use crate::ws_manager::SharedPrices;
-use std::collections::HashMap;
-use tokio::time::{Duration, Instant};
 
-/// NOTE: KuCoin production uses bullet-public to get a temporary WS endpoint. This simplified flow tries to connect
-/// to ws://ws-api.kucoin.com/endpoint but may require the bullet flow in production.
-pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = "wss://ws-api.kucoin.com/endpoint";
-    info!("kucoin: connecting to {}", url);
+pub async fn connect_kucoin(tx: tokio::sync::mpsc::Sender<PairPrice>) {
+    info!("connecting to Kucoin WS…");
 
-    loop {
-        match connect_async(url).await {
-            Ok((mut ws_stream, _)) => {
-                info!("kucoin: connected, attempting subscribe");
-                let sub = serde_json::json!({
-                    "id": "1",
-                    "type": "subscribe",
-                    "topic": "/market/ticker:all",
-                    "response": true
-                });
-                if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(sub.to_string())).await {
-                    warn!("kucoin subscribe failed: {:?}", e);
-                }
+    // Step 1: request a token from Kucoin
+    let token_url = "https://api.kucoin.com/api/v1/bullet-public";
+    let client = Client::new();
 
-                let (_write, mut read) = ws_stream.split();
-                let mut local: HashMap<String, PairPrice> = HashMap::new();
-                let mut last_flush = Instant::now();
+    let token_resp: Value = match client.post(token_url).send().await {
+        Ok(resp) => match resp.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                error!("❌ kucoin token decode error: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            error!("❌ kucoin token request error: {}", e);
+            return;
+        }
+    };
 
-                while let Some(msg) = read.next().await {
-                    match msg {
-                        Ok(m) => {
-                            if m.is_text() {
-                                if let Ok(txt) = m.into_text() {
-                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                                        if let Some(topic) = v.get("topic").and_then(|t| t.as_str()) {
-                                            if topic.starts_with("/market/ticker") {
-                                                if let Some(data) = v.get("data") {
-                                                    if let Some(sym) = data.get("symbol").and_then(|s| s.as_str()) {
-                                                        let price_opt = data.get("price").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
-                                                            .or_else(|| data.get("last").and_then(|p| p.as_f64()));
-                                                        if let Some(price) = price_opt {
-                                                            let (base, quote) = split_symbol(sym);
-                                                            if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
-                                                            }
-                                                        }
-                                                    }
+    let token = token_resp["data"]["token"].as_str().unwrap_or_default().to_string();
+    let endpoint = token_resp["data"]["instanceServers"][0]["endpoint"]
+        .as_str()
+        .unwrap_or("wss://ws-api-spot.kucoin.com")
+        .to_string();
+
+    if token.is_empty() {
+        error!("❌ kucoin missing WS token");
+        return;
+    }
+
+    let url = format!("{endpoint}?token={token}");
+    let ws_url = Url::parse(&url).expect("invalid Kucoin WS url");
+
+    match connect_async(ws_url).await {
+        Ok((mut ws_stream, _)) => {
+            info!("✅ connected to Kucoin WS");
+
+            // Subscribe to all tickers
+            let sub_msg = serde_json::json!({
+                "id": "scanner",
+                "type": "subscribe",
+                "topic": "/market/ticker:all",
+                "privateChannel": false,
+                "response": true
+            });
+
+            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                error!("❌ failed to subscribe to Kucoin: {}", e);
+                return;
+            }
+
+            while let Some(msg) = ws_stream.next().await {
+                match msg {
+                    Ok(Message::Text(txt)) => {
+                        if let Ok(json) = serde_json::from_str::<Value>(&txt) {
+                            if json.get("type") == Some(&Value::String("pong".into())) {
+                                continue;
+                            }
+
+                            if let Some(data) = json.get("data") {
+                                if let (Some(symbol), Some(price_str)) =
+                                    (data.get("symbol"), data.get("price"))
+                                {
+                                    if let (Some(symbol), Some(price_str)) =
+                                        (symbol.as_str(), price_str.as_str())
+                                    {
+                                        if let Ok(price) = price_str.parse::<f64>() {
+                                            if price > 0.0 {
+                                                if let Some((base, quote)) = parse_symbol(symbol) {
+                                                    let _ = tx.send(PairPrice {
+                                                        base,
+                                                        quote,
+                                                        price,
+                                                        is_spot: true,
+                                                    }).await;
                                                 }
                                             }
                                         }
@@ -57,36 +92,35 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                 }
                             }
                         }
-                        Err(e) => {
-                            error!("kucoin ws read error: {:?}", e);
-                            break;
+                    }
+                    Ok(Message::Ping(p)) => {
+                        if let Err(e) = ws_stream.send(Message::Pong(p)).await {
+                            warn!("failed to reply pong to Kucoin: {}", e);
                         }
                     }
-
-                    if last_flush.elapsed() >= Duration::from_secs(1) {
-                        let mut g = prices.write().await;
-                        g.insert("kucoin".to_string(), local.values().cloned().collect());
-                        last_flush = Instant::now();
+                    Ok(Message::Close(_)) => {
+                        warn!("Kucoin closed connection");
+                        break;
                     }
+                    Err(e) => {
+                        error!("Kucoin WS error: {}", e);
+                        break;
+                    }
+                    _ => {}
                 }
-
-                warn!("kucoin disconnected, reconnect in 2s");
-                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            Err(e) => {
-                error!("kucoin connect error: {:?}", e);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
+        }
+        Err(e) => {
+            error!("❌ kucoin connect error: {}", e);
         }
     }
 }
 
-fn split_symbol(sym: &str) -> (String, String) {
-    if sym.contains('-') {
-        let parts: Vec<&str> = sym.split('-').collect();
-        if parts.len() == 2 {
-            return (parts[0].to_string(), parts[1].to_string());
-        }
+fn parse_symbol(sym: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = sym.split('-').collect();
+    if parts.len() == 2 {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
     }
-    (String::new(), String::new())
-            }
+    }
