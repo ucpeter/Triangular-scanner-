@@ -1,67 +1,98 @@
-use axum::{extract::State, response::Json, http::StatusCode};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::Json,
+};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-
-use crate::models::{AppState, ScanRequest, ScanResponse, ExecMode};
+use tokio::sync::RwLock as TokioRwLock;
+use crate::models::{AppState, ScanRequest, TogglePayload, ExecMode};
 use crate::logic::scan_triangles;
+use crate::ws_manager::SharedPrices;
+
+type SharedAppState = Arc<tokio::sync::RwLock<AppState>>;
+
+pub async fn router() -> axum::Router {
+    axum::Router::new()
+        .route("/", axum::routing::get(ui_handler))
+        .route("/scan", axum::routing::post(scan_handler))
+        .route("/toggle", axum::routing::post(toggle_handler))
+}
 
 pub async fn ui_handler() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::OK,
         Json(json!({
-            "message": "WS Arbitrage Scanner running",
-            "endpoints": {
-                "POST /scan": "{ exchanges: [\"binance\"], min_profit: 0.3 }",
-                "POST /toggle_live": "\"live\" or \"scan_once\""
-            }
+            "message":"Triangular WS arbitrage scanner running",
+            "ui":"open index.html on site root"
         })),
     )
 }
 
+/// POST /scan
+/// Body: { exchanges: ["binance","bybit"], min_profit: 0.3 }
 pub async fn scan_handler(
-    State(state): State<Arc<Mutex<AppState>>>,
-    Json(payload): Json<ScanRequest>,
-) -> (StatusCode, Json<ScanResponse>) {
-    let st = state.lock().await;
-
-    // gather prices from chosen exchanges
+    State(app_state): State<AppStateExtractor>,
+    State(prices_map): State<SharedPricesWrapper>,
+    axum::extract::Json(payload): axum::extract::Json<ScanRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // gather selected exchanges' prices
     let mut merged: Vec<crate::models::PairPrice> = Vec::new();
-    for ex in &payload.exchanges {
-        if let Some(v) = st.prices.get(ex) {
-            merged.extend_from_slice(v);
+    {
+        let guard = prices_map.0.read().await;
+        for ex in &payload.exchanges {
+            if let Some(vec) = guard.get(ex) {
+                merged.extend_from_slice(vec);
+            }
         }
     }
 
     // default fee per leg 0.1%
     let results = scan_triangles(&merged, payload.min_profit, 0.10);
 
+    // store last results
+    {
+        let mut lr = app_state.0.last_results.write().unwrap();
+        *lr = Some(results.clone());
+    }
+
     (
         StatusCode::OK,
-        Json(ScanResponse {
-            status: "success".to_string(),
-            results,
-        }),
+        Json(json!({
+            "status":"success",
+            "count": results.len(),
+            "results": results
+        })),
     )
 }
 
-#[derive(serde::Deserialize)]
-pub struct TogglePayload {
-    pub mode: String, // "live" | "scan_once"
-}
-
+/// Toggle POST /toggle { mode: "live" } or { mode: "scan_once" }
 pub async fn toggle_handler(
-    State(state): State<Arc<Mutex<AppState>>>,
-    Json(payload): Json<TogglePayload>,
+    State(app_state): State<AppStateExtractor>,
+    axum::extract::Json(payload): axum::extract::Json<TogglePayload>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let mut st = state.lock().await;
-    st.mode = match payload.mode.as_str() {
+    let mode = match payload.mode.as_str() {
         "live" => ExecMode::Live,
         _ => ExecMode::ScanOnce,
     };
 
+    {
+        let mut guard = app_state.0.mode.write().unwrap();
+        *guard = mode;
+    }
+
     (
         StatusCode::OK,
-        Json(json!({ "status": "mode updated", "mode": payload.mode })),
+        Json(json!({"status":"ok","mode": payload.mode})),
     )
-  }
+}
+
+/// Tiny wrappers used to allow axum State with different shared types
+pub struct AppStateExtractor(pub AppState);
+pub struct SharedPricesWrapper(pub SharedPrices);
+
+impl State<AppStateExtractor> for AppStateExtractor {
+    fn from_request_parts<B>(_parts: &mut axum::http::request::Parts, _state: &AppStateExtractor) -> std::future::Ready<Result<Self, axum::Error>> {
+        std::future::ready(Err(axum::Error::from(std::io::Error::new(std::io::ErrorKind::Other, "not used"))))
+    }
+        }
