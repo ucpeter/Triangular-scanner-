@@ -1,193 +1,125 @@
-// src/exchanges/binance.rs
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 use tokio::sync::RwLock;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info, warn};
+use tracing::{info, warn, error};
 
 use crate::models::PairPrice;
 use crate::ws_manager::SharedPrices;
 
-/// Binance aggregated "pro" all-tickers stream:
-/// wss://stream.binance.com:9443/ws/!ticker@arr
-///
-/// This worker maintains a local HashMap<symbol, PairPrice>, and periodically
-/// writes a Vec<PairPrice> into the shared `prices` under key "binance".
+/// Binance aggregated all-tickers: wss://stream.binance.com:9443/ws/!ticker@arr
 pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
     info!("binance: connecting to {}", url);
 
-    // reconnect loop
     loop {
         match connect_async(url).await {
-            Ok((ws_stream, _resp)) => {
-                info!("binance: connected, starting listener");
-                let (_write, mut read) = ws_stream.split();
-
-                // local map: symbol -> PairPrice
-                let mut local_map: HashMap<String, PairPrice> = HashMap::new();
-                // We'll flush to shared map periodically (every X messages / seconds).
+            Ok((ws, _)) => {
+                info!("binance: connected");
+                let (_write, mut read) = ws.split();
+                let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = tokio::time::Instant::now();
 
-                while let Some(msg_res) = read.next().await {
-                    match msg_res {
-                        Ok(msg) => {
-                            if msg.is_text() {
-                                let text = match msg.into_text() {
-                                    Ok(t) => t,
-                                    Err(e) => {
-                                        warn!("binance: msg.into_text error: {:?}", e);
-                                        continue;
-                                    }
-                                };
-
-                                // Binance sometimes encloses arrays directly (each message may be an array)
-                                // Try parse as JSON value
-                                match serde_json::from_str::<Value>(&text) {
-                                    Ok(Value::Array(arr)) => {
-                                        // array of tickers
-                                        for item in arr {
-                                            if let Some(symbol) = item.get("s").and_then(|v| v.as_str()) {
-                                                // Price can be "c": "123.45" or as number
-                                                let price_opt = item.get("c")
-                                                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-                                                    .or_else(|| item.get("c").and_then(|v| v.as_f64()));
-
-                                                if let Some(price) = price_opt {
-                                                    if let (base, quote) = split_symbol_binance(symbol) {
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(m) => {
+                            if m.is_text() {
+                                if let Ok(txt) = m.into_text() {
+                                    match serde_json::from_str::<Value>(&txt) {
+                                        Ok(Value::Array(arr)) => {
+                                            for item in arr {
+                                                if let Some(sym) = item.get("s").and_then(|v| v.as_str()) {
+                                                    let price_opt = item.get("c")
+                                                        .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                                                        .or_else(|| item.get("c").and_then(|v| v.as_f64()));
+                                                    if let Some(price) = price_opt {
+                                                        let (base, quote) = split_symbol(sym);
                                                         if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                            let pp = PairPrice {
-                                                                base,
-                                                                quote,
-                                                                price,
-                                                            };
-                                                            local_map.insert(symbol.to_string(), pp);
+                                                            local.insert(sym.to_string(), PairPrice{ base, quote, price });
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                    Ok(Value::Object(obj)) => {
-                                        // Sometimes Binance sends object with "data" or other envelope
-                                        // Try common shapes: { "stream": "...", "data": {...} } or single ticker object
-                                        if let Some(data) = obj.get("data") {
-                                            if let Some(arr) = data.as_array() {
-                                                for item in arr {
-                                                    if let Some(symbol) = item.get("s").and_then(|v| v.as_str()) {
-                                                        let price_opt = item.get("c")
-                                                            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-                                                            .or_else(|| item.get("c").and_then(|v| v.as_f64()));
-                                                        if let Some(price) = price_opt {
-                                                            if let (base, quote) = split_symbol_binance(symbol) {
+                                        Ok(Value::Object(obj)) => {
+                                            // envelope `data` shape
+                                            if let Some(data) = obj.get("data") {
+                                                if let Some(arr) = data.as_array() {
+                                                    for item in arr {
+                                                        if let Some(sym) = item.get("s").and_then(|v| v.as_str()) {
+                                                            let price_opt = item.get("c")
+                                                                .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                                                                .or_else(|| item.get("c").and_then(|v| v.as_f64()));
+                                                            if let Some(price) = price_opt {
+                                                                let (base, quote) = split_symbol(sym);
                                                                 if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                                    let pp = PairPrice {
-                                                                        base,
-                                                                        quote,
-                                                                        price,
-                                                                    };
-                                                                    local_map.insert(symbol.to_string(), pp);
+                                                                    local.insert(sym.to_string(), PairPrice{ base, quote, price });
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                            } else if let Some(item) = data.as_object() {
-                                                if let Some(symbol) = item.get("s").and_then(|v| v.as_str()) {
-                                                    let price_opt = item.get("c")
+                                            } else {
+                                                // single ticker object
+                                                if let Some(sym) = obj.get("s").and_then(|v| v.as_str()) {
+                                                    let price_opt = obj.get("c")
                                                         .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-                                                        .or_else(|| item.get("c").and_then(|v| v.as_f64()));
+                                                        .or_else(|| obj.get("c").and_then(|v| v.as_f64()));
                                                     if let Some(price) = price_opt {
-                                                        if let (base, quote) = split_symbol_binance(symbol) {
-                                                            if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                                let pp = PairPrice {
-                                                                    base,
-                                                                    quote,
-                                                                    price,
-                                                                };
-                                                                local_map.insert(symbol.to_string(), pp);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            // possibly a single ticker object
-                                            if let Some(symbol) = obj.get("s").and_then(|v| v.as_str()) {
-                                                let price_opt = obj.get("c")
-                                                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-                                                    .or_else(|| obj.get("c").and_then(|v| v.as_f64()));
-                                                if let Some(price) = price_opt {
-                                                    if let (base, quote) = split_symbol_binance(symbol) {
+                                                        let (base, quote) = split_symbol(sym);
                                                         if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                            let pp = PairPrice {
-                                                                base,
-                                                                quote,
-                                                                price,
-                                                            };
-                                                            local_map.insert(symbol.to_string(), pp);
+                                                            local.insert(sym.to_string(), PairPrice{ base, quote, price });
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+                                        Err(e) => {
+                                            warn!("binance: json parse failed: {:?}", e);
+                                        }
+                                        _ => {}
                                     }
-                                    Err(e) => {
-                                        // occasionally messages not json or compressed; log and continue
-                                        warn!("binance: json parse failed: {:?} (first 120 chars: {})", e, &text.chars().take(120).collect::<String>());
-                                    }
-                                    _ => {}
                                 }
+                            }
 
-                                // Flush to shared prices every 1 second (or when many updates)
-                                if last_flush.elapsed() >= Duration::from_secs(1) {
-                                    let mut guard = prices.write().await;
-                                    let vec: Vec<PairPrice> = local_map.values().cloned().collect();
-                                    guard.insert("binance".to_string(), vec);
-                                    last_flush = tokio::time::Instant::now();
-                                }
-                            } else if msg.is_ping() || msg.is_pong() {
-                                // ignore
-                            } else {
-                                // ignore binary or other messages
+                            // flush every 1s
+                            if last_flush.elapsed() >= Duration::from_secs(1) {
+                                let mut guard = prices.write().await;
+                                guard.insert("binance".to_string(), local.values().cloned().collect());
+                                last_flush = tokio::time::Instant::now();
                             }
                         }
                         Err(e) => {
-                            warn!("binance: ws message error: {:?}", e);
-                            break; // break to reconnect
+                            error!("binance ws read error: {:?}", e);
+                            break;
                         }
-                    } // match msg_res
-                } // while let Some(msg)
+                    }
+                } // while messages
 
-                warn!("binance: websocket stream ended — will reconnect in 2s");
+                warn!("binance: disconnected, reconnecting after 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
-                continue; // outer loop will reconnect
-            } // Ok(ws_stream)
-            Err(e) => {
-                error!("binance: connect error: {:?} — retrying in 3s", e);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                continue;
             }
-        } // match connect_async
+            Err(e) => {
+                error!("binance ws connect error: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
     } // loop
 }
 
-/// Split Binance symbols robustly into (base, quote)
-fn split_symbol_binance(sym: &str) -> (String, String) {
-    // common quote suffixes on Binance (order matters: longer first)
-    let suffixes = ["BUSD", "USDT", "USDC", "BTC", "ETH", "BNB"];
-    for s in &suffixes {
-        if sym.ends_with(s) && sym.len() > s.len() {
-            let base = sym[..sym.len() - s.len()].to_string();
-            return (base, s.to_string());
+fn split_symbol(sym: &str) -> (String, String) {
+    let suffixes = ["USDT","BUSD","USDC","BTC","ETH","BNB"];
+    let s = sym.to_uppercase();
+    for suf in &suffixes {
+        if s.ends_with(suf) && s.len() > suf.len() {
+            let base = s[..s.len()-suf.len()].to_string();
+            return (base, suf.to_string());
         }
     }
-    // fallback: split into letters/digits boundary or last 3/4 chars
-    if sym.len() > 4 {
-        // try last 3
-        let (a, b) = sym.split_at(sym.len() - 3);
+    if s.len() > 4 {
+        let (a,b) = s.split_at(s.len()-3);
         return (a.to_string(), b.to_string());
     }
     (String::new(), String::new())
-                                    }
+                }
