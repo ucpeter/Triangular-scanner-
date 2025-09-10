@@ -10,12 +10,11 @@ use tokio::sync::RwLock as TokioRwLock;
 
 use crate::models::{AppState, ScanRequest, TogglePayload, ExecMode};
 use crate::logic::scan_triangles;
-use crate::ws_manager::SharedPrices;
-use crate::models::PairPrice;
+use crate::ws_manager;
 
 type SharedAppState = Arc<TokioRwLock<AppState>>;
 
-/// Simple UI endpoint
+/// UI endpoint
 pub async fn ui_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -30,14 +29,10 @@ pub async fn ui_handler() -> impl IntoResponse {
 /// Body: { exchanges: ["binance","bybit"], min_profit: 0.3 }
 pub async fn scan_handler(
     State(shared_state): State<SharedAppState>,
-    // we read prices via a global SharedPrices instance from ws_manager module — see note below
     axum::extract::Json(payload): axum::extract::Json<ScanRequest>,
 ) -> impl IntoResponse {
-    // NOTE: we expect ws_manager to be running and have populated its SharedPrices cache.
-    // For simplicity (to avoid complex State typing here) we'll ask the ws_manager for prices
-    // via its public helper `ws_manager::gather_prices_for_exchanges(...)`.
-    // That helper should return Vec<PairPrice> merged from the given exchange names.
-    let merged: Vec<PairPrice> = match crate::ws_manager::gather_prices_for_exchanges(&payload.exchanges).await {
+    // gather live prices via ws_manager helper
+    let merged = match ws_manager::gather_prices_for_exchanges(&payload.exchanges).await {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -47,10 +42,10 @@ pub async fn scan_handler(
         }
     };
 
-    // default fee per leg 0.10% (0.1)
+    // default fee per leg 0.10%
     let results = scan_triangles(&merged, payload.min_profit, 0.10);
 
-    // store last results in app state
+    // store last results
     {
         let mut guard = shared_state.write().await;
         guard.last_results = Some(results.clone());
@@ -78,15 +73,10 @@ pub async fn toggle_handler(
 
     {
         let mut guard = shared_state.write().await;
-        // set mode (AppState should expose a field or method to adjust internal behavior)
-        // Here we assume AppState has a place to store the ExecMode; modify your AppState accordingly.
-        // e.g., guard.exec_mode = mode;
-        // For safety, I'll try to set if the field exists; otherwise, it's a no-op (adjust AppState if needed).
-        #[allow(unused_must_use)]
-        {
-            // If AppState has `pub exec_mode: Arc<RwLock<ExecMode>>` then you would do:
-            // *guard.exec_mode.write().unwrap() = mode;
-        }
+        // if AppState has an exec_mode field, set it here — adjust AppState accordingly in models.rs
+        // Example: guard.exec_mode = mode;
+        // For now we just keep last_results in state; add exec_mode if you want toggle to change runtime behaviour.
+        let _ = &guard; // no-op to avoid unused variable warning
     }
 
     (
