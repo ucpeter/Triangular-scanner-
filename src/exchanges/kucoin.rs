@@ -48,7 +48,7 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                     warn!("kucoin subscribe failed: {:?}", e);
                 }
 
-                let (_write, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
 
@@ -75,8 +75,8 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                                     }
                                 }
                             } else if m.is_ping() {
-                                if let Err(e) = ws_stream.send(Message::Pong(vec![])).await {
-                                    warn!("kucoin tungstenite pong failed: {:?}", e);
+                                if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                    warn!("kucoin write pong failed: {:?}", e);
                                 }
                             }
                         }
@@ -111,4 +111,4 @@ fn parse_symbol(sym: &str) -> Option<(String,String)> {
     } else {
         None
     }
-                }
+                    }
