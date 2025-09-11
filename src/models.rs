@@ -1,9 +1,7 @@
+// src/models.rs
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
-/// Price for a pair (spot)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairPrice {
     pub base: String,
     pub quote: String,
@@ -11,33 +9,20 @@ pub struct PairPrice {
     pub is_spot: bool,
 }
 
-/// Triangular arbitrage result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriangularResult {
-    pub triangle: String,
-    pub pairs: String,
-    pub profit_before: f64,
-    pub fees: f64,
-    pub profit_after: f64,
-}
+pub type PriceMap = std::collections::HashMap<String, std::collections::HashMap<String, f64>>;
 
-/// API request body for /api/scan
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ScanRequest {
     pub exchanges: Vec<String>,
-    pub min_profit: f64,
+    pub min_profit: f64, // percent e.g. 0.3
+    pub collect_seconds: Option<u64>, // optional seconds to collect WS tickers
 }
 
-/// Shared app state kept simple (only last results)
-#[derive(Clone)]
-pub struct AppState {
-    pub last_results: Arc<RwLock<Option<Vec<TriangularResult>>>>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        AppState {
-            last_results: Arc::new(RwLock::new(None)),
-        }
+#[derive(Debug, Serialize)]
+pub struct ArbResult {
+    pub route: String,
+    pub pairs: String,
+    pub profit_before: f64,
+    pub fee_percent: f64,
+    pub profit_after: f64,
     }
-}
