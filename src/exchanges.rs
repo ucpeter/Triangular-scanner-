@@ -1,5 +1,6 @@
 // src/exchanges.rs
 use crate::models::PairPrice;
+use crate::utils::log_pairs;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,11 +10,12 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{error, info, warn};
 use url::Url;
 use reqwest::Client;
+use chrono::Utc;
 
-/// default snapshot window (seconds)
+/// Default seconds to collect snapshot if not provided
 const DEFAULT_COLLECT_SECONDS: u64 = 2;
 
-/// best-effort symbol splitter for common formats
+/// Generic symbol splitter (handles typical suffixes and common separators)
 fn split_symbol_generic(sym: &str) -> Option<(String, String)> {
     let s = sym.to_uppercase();
     let candidates = ["USDT","BUSD","USDC","BTC","ETH","BNB","ADA","DOT","SOL"];
@@ -23,22 +25,22 @@ fn split_symbol_generic(sym: &str) -> Option<(String, String)> {
             return Some((base, q.to_string()));
         }
     }
-    if sym.contains('/') {
-        let p: Vec<&str> = sym.split('/').collect();
+    if s.contains('/') {
+        let p: Vec<&str> = s.split('/').collect();
         if p.len() == 2 { return Some((p[0].to_string(), p[1].to_string())); }
     }
-    if sym.contains('-') {
-        let p: Vec<&str> = sym.split('-').collect();
+    if s.contains('-') {
+        let p: Vec<&str> = s.split('-').collect();
         if p.len() == 2 { return Some((p[0].to_string(), p[1].to_string())); }
     }
-    if sym.contains('_') {
-        let p: Vec<&str> = sym.split('_').collect();
+    if s.contains('_') {
+        let p: Vec<&str> = s.split('_').collect();
         if p.len() == 2 { return Some((p[0].to_string(), p[1].to_string())); }
     }
     None
 }
 
-/// fetch binance tickers via WS one-shot
+/// -------- Binance (WS snapshot) --------
 pub async fn fetch_binance(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>, String> {
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
     info!("binance: connecting {}", url);
@@ -86,10 +88,11 @@ pub async fn fetch_binance(collect_seconds: Option<u64>) -> Result<Vec<PairPrice
     }
 
     let _ = write.send(Message::Close(None)).await;
+    log_pairs("binance", seen.len());
     Ok(seen.into_iter().map(|(_,v)| v).collect())
 }
 
-/// fetch bybit spot tickers one-shot
+/// -------- Bybit (WS snapshot) --------
 pub async fn fetch_bybit(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>, String> {
     let url = "wss://stream.bybit.com/v5/public/spot";
     info!("bybit: connecting {}", url);
@@ -147,10 +150,11 @@ pub async fn fetch_bybit(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>,
     }
 
     let _ = write.send(Message::Close(None)).await;
+    log_pairs("bybit", seen.len());
     Ok(seen.into_iter().map(|(_,v)| v).collect())
 }
 
-/// fetch kucoin via bullet-public + ws snapshot
+/// -------- KuCoin (bullet-public WS snapshot) --------
 pub async fn fetch_kucoin(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>, String> {
     info!("kucoin: requesting bullet-public token");
     let client = Client::new();
@@ -162,9 +166,7 @@ pub async fn fetch_kucoin(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>
         .and_then(|i| i.get("endpoint")).and_then(|v| v.as_str())
         .unwrap_or("wss://ws-api-spot.kucoin.com").to_string();
 
-    if token.is_empty() {
-        return Err("kucoin missing token".to_string());
-    }
+    if token.is_empty() { return Err("kucoin missing token".to_string()); }
 
     let url = format!("{}?token={}", endpoint, token);
     info!("kucoin: connecting {}", url);
@@ -219,10 +221,11 @@ pub async fn fetch_kucoin(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>
     }
 
     let _ = write.send(Message::Close(None)).await;
+    log_pairs("kucoin", seen.len());
     Ok(seen.into_iter().map(|(_,v)| v).collect())
 }
 
-/// fetch gateio snapshot via WS
+/// -------- Gate.io (WS snapshot) --------
 pub async fn fetch_gateio(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>, String> {
     let url = "wss://api.gateio.ws/ws/v4/";
     info!("gateio: connecting {}", url);
@@ -236,7 +239,7 @@ pub async fn fetch_gateio(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>
 
     let (mut write, mut read) = ws.split();
     let sub = serde_json::json!({
-        "time": chrono::Utc::now().timestamp_millis(),
+        "time": Utc::now().timestamp_millis(),
         "channel": "spot.tickers",
         "event": "subscribe",
         "payload": []
@@ -277,5 +280,6 @@ pub async fn fetch_gateio(collect_seconds: Option<u64>) -> Result<Vec<PairPrice>
     }
 
     let _ = write.send(Message::Close(None)).await;
+    log_pairs("gateio", seen.len());
     Ok(seen.into_iter().map(|(_,v)| v).collect())
-          }
+                                            }
