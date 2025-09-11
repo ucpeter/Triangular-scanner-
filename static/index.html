@@ -1,351 +1,128 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Triangular WS Scanner — Scan on Demand</title>
-<style>
-  :root{
-    --bg:#0b1220; --panel:#071129; --muted:#9fb0d8; --blue:#1563d6; --card:#0f1a27;
-    --pos:#10b981; --neg:#ef4444; --white:#e6eef8;
-  }
-  body{background:var(--bg);color:var(--white);font-family:Inter,Arial,Helvetica,sans-serif;margin:0;padding:18px}
-  .wrap{max-width:1100px;margin:0 auto}
-  .title{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-  .logo-box{background:#e6f6ff;color:#036; padding:8px 12px;border-radius:8px;font-weight:600}
-  h1{font-size:18px;margin:0}
-  .panel{background:var(--panel);padding:14px;border-radius:10px;box-shadow:0 8px 24px rgba(2,6,23,0.6)}
-  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px}
-  label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}
-  select,input{background:var(--card);color:var(--white);border:1px solid rgba(255,255,255,0.03);padding:8px;border-radius:8px;min-width:160px}
-  select[multiple]{height:110px}
-  .btn{background:var(--blue);color:#fff;padding:10px 14px;border-radius:8px;border:0;cursor:pointer;font-weight:600}
-  .btn[disabled]{opacity:.6;cursor:default}
-  #status{color:var(--muted);margin-top:10px;font-size:13px}
-  #resultsWrap{margin-top:14px}
-  table{width:100%;border-collapse:collapse;overflow:auto;display:block;max-height:60vh}
-  thead th{background:var(--blue);color:#fff;padding:8px;text-align:left;position:sticky;top:0}
-  tbody td{padding:10px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:13px}
-  td.small{font-size:12px;color:var(--muted)}
-  .pos{color:var(--pos);font-weight:700}
-  .neg{color:var(--neg);font-weight:700}
-  .muted{color:var(--muted)}
-  .debug{background:#071826;border:1px solid rgba(255,255,255,0.02);padding:10px;border-radius:8px;margin-top:12px;font-size:13px;color:#cfe9ff}
-  .debug pre{white-space:pre-wrap;max-height:220px;overflow:auto}
-  @media(max-width:720px){
-    .controls{flex-direction:column;align-items:stretch}
-    select,input{width:100%}
-  }
-</style>
+  <meta charset="UTF-8" />
+  <title>Triangular Arbitrage Scanner</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #121212;
+      color: #fff;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      width: 95%;
+      max-width: 1000px;
+      margin: 20px auto;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .exchanges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    .exchange {
+      background-color: #2c2c2c;
+      padding: 10px 15px;
+      border-radius: 5px;
+      cursor: pointer;
+      user-select: none;
+      transition: background-color 0.2s;
+    }
+    .exchange.selected {
+      background-color: #2196F3;
+      color: white;
+    }
+    button {
+      background-color: #2196F3;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 5px;
+      margin-bottom: 15px;
+    }
+    button:hover {
+      background-color: #1976D2;
+    }
+    pre {
+      background-color: #1e1e1e;
+      padding: 10px;
+      border-radius: 5px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    #results {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #222;
+      border-radius: 5px;
+    }
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="title">
-    <div class="logo-box">Triangular WS Scanner</div>
-    <h1 class="muted">Scan on Demand — WebSocket snapshot</h1>
-  </div>
+  <div class="container">
+    <h1>Triangular Arbitrage Scanner</h1>
 
-  <div class="panel">
-    <div class="controls">
-      <div>
-        <label>Select exchanges (tap to select)</label>
-        <select id="exchanges" multiple>
-          <option value="binance" selected>Binance</option>
-          <option value="bybit">Bybit</option>
-          <option value="kucoin">KuCoin</option>
-          <option value="gateio">Gate.io</option>
-        </select>
-        <div class="muted" style="font-size:12px;margin-top:6px">Tip: mobile multi-select usually supports long-press or shows checkboxes depending on browser</div>
-      </div>
-
-      <div>
-        <label>Minimum profit before fees (%)</label>
-        <input id="minProfit" type="number" step="0.1" value="0.3"/>
-      </div>
-
-      <div>
-        <label>Collect window (seconds)</label>
-        <input id="collectSec" type="number" step="1" value="2"/>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
-        <button id="scanBtn" class="btn">Scan Now</button>
-        <button id="testBtn" style="background:#334155;color:#fff;padding:6px 8px;border-radius:8px;border:0;font-size:12px">Test /scan route</button>
-      </div>
+    <div class="exchanges">
+      <div class="exchange" onclick="toggleExchange(this)">Binance</div>
+      <div class="exchange" onclick="toggleExchange(this)">Bybit</div>
+      <div class="exchange" onclick="toggleExchange(this)">Kucoin</div>
+      <div class="exchange" onclick="toggleExchange(this)">Gateio</div>
     </div>
 
-    <div id="status" aria-live="polite"></div>
-
-    <div id="resultsWrap" style="display:none">
-      <table id="resultsTable" role="table" aria-live="polite">
-        <thead>
-          <tr>
-            <th style="width:40px">#</th>
-            <th>Triangle Route</th>
-            <th>Pairs</th>
-            <th style="width:120px">Profit before (%)</th>
-            <th style="width:90px">Fees (%)</th>
-            <th style="width:120px">Profit after (%)</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <details style="margin-top:10px" open>
-      <summary style="cursor:pointer;color:var(--muted)">Debug / Response (tap to expand)</summary>
-      <div class="debug">
-        <div id="debugStatus" class="muted">Idle</div>
-        <pre id="debugRaw">No activity yet.</pre>
-      </div>
-    </details>
+    <button onclick="doScan()">Scan</button>
+    <h3>Debug</h3>
+    <pre id="debug"></pre>
+    <h3>Results</h3>
+    <div id="results"></div>
   </div>
-</div>
 
-<script>
-(function(){
-  const scanBtn = document.getElementById('scanBtn');
-  const testBtn = document.getElementById('testBtn');
-  const statusEl = document.getElementById('status');
-  const debugStatus = document.getElementById('debugStatus');
-  const debugRaw = document.getElementById('debugRaw');
-  const resultsWrap = document.getElementById('resultsWrap');
-  const resultsBody = document.querySelector('#resultsTable tbody');
+  <script>
+    const selectedExchanges = new Set();
 
-  function setStatus(msg, isError=false){
-    statusEl.textContent = msg;
-    statusEl.style.color = isError ? '#fca5a5' : '#9fd0ff';
-  }
-  function logDebug(title, text){
-    debugStatus.textContent = title;
-    debugRaw.textContent = text;
-  }
-
-  function getSelectedExchanges(){
-    const sel = Array.from(document.getElementById('exchanges').selectedOptions).map(o => o.value);
-    // if none selected, default to all
-    return sel.length ? sel : ['binance','bybit','kucoin','gateio'];
-  }
-
-  function buildPayload(){
-    return {
-      exchanges: getSelectedExchanges(),
-      min_profit: parseFloat(document.getElementById('minProfit').value) || 0,
-      collect_seconds: parseInt(document.getElementById('collectSec').value) || 2
-    };
-  }
-
-  async function fetchWithTimeout(resource, options = {}) {
-    const { timeout = 12000 } = options;
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    try {
-      const res = await fetch(resource, {...options, signal: controller.signal});
-      clearTimeout(id);
-      return res;
-    } catch (e) {
-      clearTimeout(id);
-      throw e;
-    }
-  }
-
-  async function tryPostScan(payload){
-    try {
-      const r = await fetchWithTimeout('/scan', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload),
-        timeout: 16000
-      });
-      return r;
-    } catch (e) {
-      throw new Error('POST failed: ' + (e.message || e));
-    }
-  }
-
-  async function tryGetScan(payload){
-    const params = new URLSearchParams();
-    if (Array.isArray(payload.exchanges)) payload.exchanges.forEach(x => params.append('exchanges', x));
-    else params.set('exchanges', payload.exchanges);
-    params.set('min_profit', payload.min_profit);
-    params.set('collect_seconds', payload.collect_seconds);
-    const url = '/scan?' + params.toString();
-    try {
-      const r = await fetchWithTimeout(url, { method: 'GET', timeout: 16000 });
-      return r;
-    } catch (e) {
-      throw new Error('GET failed: ' + (e.message || e));
-    }
-  }
-
-  function normalizeResults(payload){
-    // payload could be:
-    // { results: [...] } OR { results: {...} } OR [] OR { count_opportunities: x, results: [...] }
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    if (payload.results && Array.isArray(payload.results)) return payload.results;
-    // sometimes backend returns { results: Vec<ArbResult> } as plain property OR {count_opportunities, results}
-    for (const k of ['results','data','opportunities']) {
-      if (Array.isArray(payload[k])) return payload[k];
-    }
-    // fallback: find any array value
-    for (const v of Object.values(payload)) {
-      if (Array.isArray(v)) return v;
-    }
-    return [];
-  }
-
-  function renderTable(rows){
-    resultsBody.innerHTML = '';
-    if (!rows.length) {
-      resultsWrap.style.display = 'none';
-      setStatus('No opportunities found', false);
-      return;
-    }
-    rows.forEach((r,i) => {
-      const row = document.createElement('tr');
-
-      // support different field names possibly returned by backends
-      const route = r.route || r.triangle || r.route_name || '';
-      const pairs = r.pairs || r.pair_str || r.pairs_list || r.pairs_text || '';
-      const before = (typeof r.profit_before === 'number') ? r.profit_before : (typeof r.profit_before_fees === 'number' ? r.profit_before_fees : (r.profit_before ? Number(r.profit_before) : NaN));
-      const after = (typeof r.profit_after === 'number') ? r.profit_after : (typeof r.profit_after_fees === 'number' ? r.profit_after_fees : (r.profit_after ? Number(r.profit_after) : NaN));
-      const fees = (typeof r.fee_percent === 'number') ? r.fee_percent : (typeof r.trade_fees === 'number' ? r.trade_fees : (r.fees ? Number(r.fees) : NaN));
-
-      const beforeText = Number.isFinite(before) ? before.toFixed(2) : (r.profit_before ? Number(r.profit_before).toFixed(2) : '—');
-      const afterText = Number.isFinite(after) ? after.toFixed(2) : (r.profit_after ? Number(r.profit_after).toFixed(2) : '—');
-      const feesText = Number.isFinite(fees) ? fees.toFixed(2) : (r.fee ? r.fee : '—');
-
-      const clsAfter = (Number(after) > 0) ? 'pos' : 'neg';
-      row.innerHTML = `
-        <td class="small">${i+1}</td>
-        <td class="small">${route}</td>
-        <td class="small">${pairs}</td>
-        <td class="small">${beforeText}</td>
-        <td class="small">${feesText}</td>
-        <td class="small ${clsAfter}">${afterText}</td>
-      `;
-      resultsBody.appendChild(row);
-    });
-    resultsWrap.style.display = 'block';
-    setStatus(`Found ${rows.length} opportunities`);
-  }
-
-  async function doScan(){
-    scanBtn.disabled = true;
-    testBtn.disabled = true;
-    const origText = scanBtn.textContent;
-    scanBtn.textContent = 'Scanning…';
-    setStatus('Scanning — connecting to exchanges (this may take a few seconds)');
-
-    const payload = buildPayload();
-    logDebug('Payload', JSON.stringify(payload, null, 2));
-
-    // Try POST first
-    try {
-      const postRes = await tryPostScan(payload);
-      const contentType = postRes.headers.get('content-type') || '';
-      const text = await postRes.text();
-      logDebug(`POST /scan (status ${postRes.status})`, text);
-
-      // If response is JSON-like, parse and use it
-      if (contentType.includes('application/json') || text.trim().startsWith('{') || text.trim().startsWith('[')) {
-        let json;
-        try { json = JSON.parse(text); }
-        catch(e){ json = null; }
-        const rows = normalizeResults(json);
-        renderTable(rows);
-        scanBtn.disabled = false;
-        testBtn.disabled = false;
-        scanBtn.textContent = origText;
-        return;
-      }
-
-      // If POST returned HTML or 405/404, try GET fallback
-      if (postRes.status === 405 || postRes.status === 404 || !contentType.includes('application/json')) {
-        setStatus('POST failed or returned HTML — trying GET fallback');
-        try {
-          const getRes = await tryGetScan(payload);
-          const t = await getRes.text();
-          logDebug(`GET /scan (status ${getRes.status})`, t);
-          if (getRes.headers.get('content-type')?.includes('application/json') || t.trim().startsWith('[') || t.trim().startsWith('{')) {
-            let json;
-            try{ json = JSON.parse(t); } catch(e){ json = null; }
-            const rows = normalizeResults(json);
-            renderTable(rows);
-          } else {
-            setStatus('Scan failed — backend returned non-JSON content', true);
-          }
-        } catch (ge) {
-          logDebug('GET fallback error', ge.toString());
-          setStatus('GET fallback failed: ' + ge.message, true);
-        }
-        scanBtn.disabled = false;
-        testBtn.disabled = false;
-        scanBtn.textContent = origText;
-        return;
-      }
-
-      // If nothing matched:
-      setStatus('Unexpected response from server', true);
-      scanBtn.disabled = false;
-      testBtn.disabled = false;
-      scanBtn.textContent = origText;
-    } catch (err) {
-      logDebug('POST error', err.toString());
-      setStatus('POST scan failed: ' + err.message, true);
-      // Try GET fallback just in case
-      try {
-        const getRes = await tryGetScan(payload);
-        const t = await getRes.text();
-        logDebug(`GET fallback (status ${getRes.status})`, t);
-        if (getRes.headers.get('content-type')?.includes('application/json') || t.trim().startsWith('[') || t.trim().startsWith('{')) {
-          let json;
-          try{ json = JSON.parse(t); } catch(e){ json = null; }
-          const rows = normalizeResults(json);
-          renderTable(rows);
-          setStatus('GET fallback succeeded');
-        } else {
-          setStatus('GET fallback returned non-JSON', true);
-        }
-      } catch (ge) {
-        logDebug('GET fallback error', ge.toString());
-        setStatus('Both POST and GET requests failed', true);
-      }
-      scanBtn.disabled = false;
-      testBtn.disabled = false;
-      scanBtn.textContent = origText;
-    }
-  }
-
-  // quick test button: call /scan with no payload (GET) to see if route exists
-  async function testRoute(){
-    testBtn.disabled = true;
-    setStatus('Testing /scan (GET)...');
-    try {
-      const res = await fetch('/scan');
-      const t = await res.text();
-      logDebug('/scan GET (status ' + res.status + ')', t);
-      if (res.headers.get('content-type')?.includes('application/json') || t.trim().startsWith('{') || t.trim().startsWith('[')){
-        setStatus('/scan exists and returned JSON');
+    function toggleExchange(el) {
+      const name = el.textContent;
+      if (selectedExchanges.has(name)) {
+        selectedExchanges.delete(name);
+        el.classList.remove("selected");
       } else {
-        setStatus('/scan returned non-JSON (likely static HTML) — make sure /scan is defined before static file serving', true);
+        selectedExchanges.add(name);
+        el.classList.add("selected");
       }
-    } catch (e) {
-      logDebug('test error', e.toString());
-      setStatus('Test failed: ' + e.message, true);
-    } finally {
-      testBtn.disabled = false;
     }
-  }
 
-  scanBtn.addEventListener('click', doScan);
-  testBtn.addEventListener('click', testRoute);
+    async function doScan() {
+      const debugEl = document.getElementById("debug");
+      const resultsEl = document.getElementById("results");
+      debugEl.textContent = "Starting GET /scan...";
+      resultsEl.textContent = "";
 
-  // initial messages
-  setStatus('Ready — choose exchanges and tap Scan');
-  logDebug('Idle','No requests yet');
-})();
-</script>
+      try {
+        const exchanges = Array.from(selectedExchanges);
+        const url = exchanges.length > 0
+          ? `/scan?exchanges=${encodeURIComponent(exchanges.join(","))}`
+          : `/scan`;
+
+        const res = await fetch(url);
+        if (!res.ok) {
+          debugEl.textContent = `GET /scan failed: ${res.status}`;
+          return;
+        }
+        const data = await res.json();
+        debugEl.textContent = "GET /scan success";
+        resultsEl.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        debugEl.textContent = "Error: " + err;
+      }
+    }
+  </script>
 </body>
-      </html>
+</html>
