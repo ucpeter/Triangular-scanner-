@@ -2,7 +2,8 @@
 use axum::{extract::State, response::Json, http::StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::time::timeout;
+use std::time::Duration;
 use crate::models::{ScanRequest, PairPrice, ArbResult};
 use crate::{exchanges, logic};
 
@@ -21,44 +22,42 @@ pub async fn scan_handler(
     let fee_per_leg = 0.10_f64; // default per-leg fee (0.1%)
 
     // spawn fetch tasks
-    let mut tasks = vec![];
+    let mut handles = vec![];
     for ex in payload.exchanges.iter() {
-        match ex.to_lowercase().as_str() {
+        let ex_lower = ex.to_lowercase();
+        let collect = collect_seconds;
+        match ex_lower.as_str() {
             "binance" => {
-                tasks.push(tokio::spawn(async move {
-                    let res = timeout(Duration::from_secs(15), exchanges::fetch_binance(Some(collect_seconds))).await;
-                    match res {
-                        Ok(Ok(v)) => Ok(("binance".to_string(), v)),
+                handles.push(tokio::spawn(async move {
+                    match timeout(Duration::from_secs(20), exchanges::fetch_binance(Some(collect))).await {
+                        Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(format!("binance err: {}", e)),
                         Err(_) => Err("binance timeout".to_string()),
                     }
                 }));
             }
             "bybit" => {
-                tasks.push(tokio::spawn(async move {
-                    let res = timeout(Duration::from_secs(15), exchanges::fetch_bybit(Some(collect_seconds))).await;
-                    match res {
-                        Ok(Ok(v)) => Ok(("bybit".to_string(), v)),
+                handles.push(tokio::spawn(async move {
+                    match timeout(Duration::from_secs(20), exchanges::fetch_bybit(Some(collect))).await {
+                        Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(format!("bybit err: {}", e)),
                         Err(_) => Err("bybit timeout".to_string()),
                     }
                 }));
             }
             "kucoin" => {
-                tasks.push(tokio::spawn(async move {
-                    let res = timeout(Duration::from_secs(20), exchanges::fetch_kucoin(Some(collect_seconds))).await;
-                    match res {
-                        Ok(Ok(v)) => Ok(("kucoin".to_string(), v)),
+                handles.push(tokio::spawn(async move {
+                    match timeout(Duration::from_secs(25), exchanges::fetch_kucoin(Some(collect))).await {
+                        Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(format!("kucoin err: {}", e)),
                         Err(_) => Err("kucoin timeout".to_string()),
                     }
                 }));
             }
             "gate" | "gateio" => {
-                tasks.push(tokio::spawn(async move {
-                    let res = timeout(Duration::from_secs(15), exchanges::fetch_gateio(Some(collect_seconds))).await;
-                    match res {
-                        Ok(Ok(v)) => Ok(("gateio".to_string(), v)),
+                handles.push(tokio::spawn(async move {
+                    match timeout(Duration::from_secs(20), exchanges::fetch_gateio(Some(collect))).await {
+                        Ok(Ok(v)) => Ok(v),
                         Ok(Err(e)) => Err(format!("gateio err: {}", e)),
                         Err(_) => Err("gateio timeout".to_string()),
                     }
@@ -70,15 +69,13 @@ pub async fn scan_handler(
         }
     }
 
-    // gather
+    // gather results
     let mut merged_pairs: Vec<PairPrice> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    for t in tasks {
-        match t.await {
-            Ok(Ok((_name, vec_pairs))) => {
-                merged_pairs.extend(vec_pairs);
-            }
+    for h in handles {
+        match h.await {
+            Ok(Ok(vec_pairs)) => merged_pairs.extend(vec_pairs),
             Ok(Err(e)) => errors.push(e),
             Err(e) => errors.push(format!("task join err: {}", e)),
         }
@@ -86,9 +83,8 @@ pub async fn scan_handler(
 
     // build price map and run scan
     let price_map = logic::build_price_map(&merged_pairs);
-    let results = logic::scan_triangles(&price_map, min_profit, fee_per_leg);
+    let results: Vec<ArbResult> = logic::scan_triangles(&price_map, min_profit, fee_per_leg);
 
-    // return
     (StatusCode::OK, Json(json!({
         "status": "ok",
         "errors": errors,
@@ -96,4 +92,4 @@ pub async fn scan_handler(
         "count_opportunities": results.len(),
         "results": results
     })))
-                }
+        }
