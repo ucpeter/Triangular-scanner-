@@ -1,23 +1,17 @@
 [package]
-name = "triangular_ws_scan"
+name = "arbitrage-scanner"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 axum = "0.7"
-hyper = "0.14"
 tokio = { version = "1", features = ["full"] }
-
-# WebSocket with rustls roots (important on Render)
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-tungstenite = { version = "0.21", default-features = false, features = ["rustls-tls-webpki-roots"] }
-
+tokio-tungstenite = "0.21"
+tungstenite = "0.21"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] } # KuCoin token
-url = "2.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter","fmt"] }
-chrono = { version = "0.4", features = ["serde"] }
-tower-http = { version = "0.5", features = ["fs","cors"] }
+url = "2.4"
+chrono = "0.4"
