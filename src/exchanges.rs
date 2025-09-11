@@ -1,169 +1,178 @@
-use futures_util::{StreamExt, SinkExt};
-use serde_json::Value;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use crate::models::PairPrice;
-use tracing::{info, warn, error};
-use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
-use chrono::Utc;
-use url::Url;
+use tracing::{info, warn, error};
+use futures_util::{StreamExt, SinkExt};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use serde_json::Value;
 
-/// Collect prices from all exchanges (one-shot scan)
-pub async fn collect_prices() -> Vec<PairPrice> {
-    let mut out = Vec::new();
-
-    if let Ok(mut b) = fetch_binance().await { out.append(&mut b); }
-    if let Ok(mut g) = fetch_gateio().await { out.append(&mut g); }
-    if let Ok(mut k) = fetch_kucoin().await { out.append(&mut k); }
-    if let Ok(mut y) = fetch_bybit().await { out.append(&mut y); }
-
-    out
-}
-
-/// ---------------- Binance ----------------
-async fn fetch_binance() -> Result<Vec<PairPrice>, String> {
-    let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-    let (ws_stream, _) = connect_async(url).await.map_err(|e| e.to_string())?;
-    let (_, mut read) = ws_stream.split();
-
-    let mut out = Vec::new();
-    if let Some(Ok(msg)) = read.next().await {
-        if let Ok(txt) = msg.into_text() {
-            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&txt) {
-                for item in arr {
-                    if let (Some(sym), Some(price)) = (
-                        item.get("s").and_then(|s| s.as_str()),
-                        item.get("c").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
-                    ) {
-                        let (base, quote) = split_symbol(sym);
-                        if !base.is_empty() {
-                            out.push(PairPrice { base, quote, price, is_spot: true });
-                        }
-                    }
-                }
-            }
+/// Collects a snapshot of market prices for a given exchange over a few seconds.
+pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
+    let url = match exchange {
+        "binance" => "wss://stream.binance.com:9443/ws/!ticker@arr",
+        "bybit"   => "wss://stream.bybit.com/v5/public/spot",
+        "gateio"  => "wss://api.gateio.ws/ws/v4/",
+        "kucoin"  => "wss://ws-api-spot.kucoin.com/?token=public",
+        _ => {
+            warn!("Unknown exchange {}, defaulting to Binance", exchange);
+            "wss://stream.binance.com:9443/ws/!ticker@arr"
         }
-    }
-    Ok(out)
-}
+    };
 
-/// ---------------- Bybit ----------------
-async fn fetch_bybit() -> Result<Vec<PairPrice>, String> {
-    let url = "wss://stream.bybit.com/v5/public/spot";
-    let (mut ws, _) = connect_async(url).await.map_err(|e| e.to_string())?;
-    let sub = serde_json::json!({"op":"subscribe","args":["tickers"]});
-    ws.send(Message::Text(sub.to_string())).await.map_err(|e| e.to_string())?;
+    info!("Connecting to {} at {}", exchange, url);
+    let mut pairs: Vec<PairPrice> = Vec::new();
 
-    let (_, mut read) = ws.split();
-    let mut out = Vec::new();
-    if let Some(Ok(msg)) = read.next().await {
-        if let Ok(txt) = msg.into_text() {
-            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
-                    if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
-                        for it in arr {
-                            if let (Some(sym), Some(price)) = (
-                                it.get("symbol").and_then(|s| s.as_str()),
-                                it.get("lastPrice").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
-                            ) {
-                                let (base, quote) = split_symbol(sym);
-                                if !base.is_empty() {
-                                    out.push(PairPrice { base, quote, price, is_spot: true });
+    match connect_async(url).await {
+        Ok((mut ws_stream, _)) => {
+            // For Bybit & Gateio, we must send a subscription
+            if exchange == "bybit" {
+                let sub = serde_json::json!({
+                    "op": "subscribe",
+                    "args": ["tickers"]
+                });
+                let _ = ws_stream.send(Message::Text(sub.to_string())).await;
+            } else if exchange == "gateio" {
+                let sub = serde_json::json!({
+                    "time": chrono::Utc::now().timestamp_millis(),
+                    "channel":"spot.tickers",
+                    "event":"subscribe",
+                    "payload":[]
+                });
+                let _ = ws_stream.send(Message::Text(sub.to_string())).await;
+            } else if exchange == "kucoin" {
+                let sub = serde_json::json!({
+                    "id":"scanner",
+                    "type":"subscribe",
+                    "topic":"/market/ticker:all",
+                    "response": true
+                });
+                let _ = ws_stream.send(Message::Text(sub.to_string())).await;
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(seconds);
+
+            while let Some(msg) = ws_stream.next().await {
+                if Instant::now() >= deadline {
+                    break;
+                }
+
+                match msg {
+                    Ok(m) if m.is_text() => {
+                        if let Ok(txt) = m.into_text() {
+                            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                match exchange {
+                                    "binance" => {
+                                        if let Value::Array(arr) = v {
+                                            for it in arr {
+                                                if let (Some(sym), Some(price)) =
+                                                    (it.get("s").and_then(|v| v.as_str()),
+                                                     it.get("c").and_then(|v| v.as_str())
+                                                                .and_then(|s| s.parse::<f64>().ok()))
+                                                {
+                                                    let (base, quote) = split_symbol(sym);
+                                                    if price > 0.0 && !base.is_empty() {
+                                                        pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "bybit" => {
+                                        if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
+                                            if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                                                for it in arr {
+                                                    if let (Some(sym), Some(price)) =
+                                                        (it.get("symbol").and_then(|s| s.as_str()),
+                                                         it.get("lastPrice").and_then(|p| p.as_str())
+                                                                            .and_then(|s| s.parse::<f64>().ok()))
+                                                    {
+                                                        let (base, quote) = split_symbol(sym);
+                                                        if price > 0.0 && !base.is_empty() {
+                                                            pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "gateio" => {
+                                        if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
+                                            if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
+                                                for it in arr {
+                                                    if let (Some(sym), Some(last)) =
+                                                        (it.get("currency_pair").and_then(|s| s.as_str()),
+                                                         it.get("last").and_then(|s| s.as_f64()))
+                                                    {
+                                                        let parts: Vec<&str> = sym.split('_').collect();
+                                                        if parts.len() == 2 && last > 0.0 {
+                                                            pairs.push(PairPrice {
+                                                                base: parts[0].to_string(),
+                                                                quote: parts[1].to_string(),
+                                                                price: last,
+                                                                is_spot: true
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "kucoin" => {
+                                        if let Some(data) = v.get("data") {
+                                            if let (Some(sym), Some(price_str)) =
+                                                (data.get("symbol").and_then(|s| s.as_str()),
+                                                 data.get("price").and_then(|p| p.as_str()))
+                                            {
+                                                if let Ok(price) = price_str.parse::<f64>() {
+                                                    if price > 0.0 {
+                                                        if let Some((base, quote)) = parse_symbol(sym) {
+                                                            pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
                     }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// ---------------- Gate.io ----------------
-async fn fetch_gateio() -> Result<Vec<PairPrice>, String> {
-    let url = "wss://api.gateio.ws/ws/v4/";
-    let (mut ws, _) = connect_async(url).await.map_err(|e| e.to_string())?;
-
-    let sub_msg = serde_json::json!({
-        "time": Utc::now().timestamp_millis(),
-        "channel":"spot.tickers",
-        "event":"subscribe",
-        "payload":[]
-    });
-    ws.send(Message::Text(sub_msg.to_string())).await.map_err(|e| e.to_string())?;
-
-    let (_, mut read) = ws.split();
-    let mut out = Vec::new();
-    if let Some(Ok(msg)) = read.next().await {
-        if let Ok(txt) = msg.into_text() {
-            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
-                    if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
-                        for it in arr {
-                            if let (Some(sym), Some(price)) = (
-                                it.get("currency_pair").and_then(|s| s.as_str()),
-                                it.get("last").and_then(|s| s.as_f64())
-                            ) {
-                                let parts: Vec<&str> = sym.split('_').collect();
-                                if parts.len() == 2 {
-                                    out.push(PairPrice { base: parts[0].into(), quote: parts[1].into(), price, is_spot: true });
-                                }
-                            }
-                        }
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("{} ws error: {:?}", exchange, e);
+                        break;
                     }
                 }
             }
         }
-    }
-    Ok(out)
-}
-
-/// ---------------- Kucoin ----------------
-async fn fetch_kucoin() -> Result<Vec<PairPrice>, String> {
-    let client = reqwest::Client::new();
-    let token_resp: Value = client.post("https://api.kucoin.com/api/v1/bullet-public")
-        .send().await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
-
-    let token = token_resp["data"]["token"].as_str().unwrap_or_default();
-    let endpoint = token_resp["data"]["instanceServers"][0]["endpoint"].as_str().unwrap_or("");
-    let url = format!("{}?token={}", endpoint, token);
-
-    let (mut ws, _) = connect_async(Url::parse(&url).unwrap()).await.map_err(|e| e.to_string())?;
-    let sub = serde_json::json!({"id":"scanner","type":"subscribe","topic":"/market/ticker:all","response":true});
-    ws.send(Message::Text(sub.to_string())).await.map_err(|e| e.to_string())?;
-
-    let (_, mut read) = ws.split();
-    let mut out = Vec::new();
-    if let Some(Ok(msg)) = read.next().await {
-        if let Ok(txt) = msg.into_text() {
-            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                if let Some(data) = v.get("data") {
-                    if let (Some(sym), Some(price)) = (
-                        data.get("symbol").and_then(|s| s.as_str()),
-                        data.get("price").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok())
-                    ) {
-                        let parts: Vec<&str> = sym.split('-').collect();
-                        if parts.len() == 2 {
-                            out.push(PairPrice { base: parts[0].into(), quote: parts[1].into(), price, is_spot: true });
-                        }
-                    }
-                }
-            }
+        Err(e) => {
+            error!("{} connect error: {:?}", exchange, e);
         }
     }
-    Ok(out)
+
+    info!("{} collected {} pairs", exchange, pairs.len());
+    pairs
 }
 
-/// ---------------- Helpers ----------------
+/// Very simple symbol splitter for Binance-style symbols (e.g., BTCUSDT).
 fn split_symbol(sym: &str) -> (String, String) {
-    let suffixes = ["USDT","BUSD","USDC","BTC","ETH"];
-    for s in suffixes {
-        if sym.ends_with(s) && sym.len() > s.len() {
-            let base = sym.trim_end_matches(s).to_string();
-            return (base, s.to_string());
+    let suffixes = ["USDT", "BUSD", "USDC", "BTC", "ETH"];
+    let s = sym.to_uppercase();
+    for suf in &suffixes {
+        if s.ends_with(suf) && s.len() > suf.len() {
+            let base = s[..s.len() - suf.len()].to_string();
+            return (base, suf.to_string());
         }
     }
     (String::new(), String::new())
-                }
+}
+
+/// Parses Kucoin symbols (e.g., BTC-USDT).
+fn parse_symbol(sym: &str) -> Option<(String,String)> {
+    let parts: Vec<&str> = sym.split('-').collect();
+    if parts.len() == 2 {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+            }
