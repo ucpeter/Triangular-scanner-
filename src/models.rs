@@ -1,5 +1,6 @@
 // src/models.rs
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairPrice {
@@ -9,7 +10,7 @@ pub struct PairPrice {
     pub is_spot: bool,
 }
 
-pub type PriceMap = std::collections::HashMap<String, std::collections::HashMap<String, f64>>;
+pub type PriceMap = HashMap<String, HashMap<String, f64>>;
 
 #[derive(Debug, Deserialize)]
 pub struct ScanRequest {
@@ -25,4 +26,4 @@ pub struct ArbResult {
     pub profit_before: f64,
     pub fee_percent: f64,
     pub profit_after: f64,
-    }
+}
