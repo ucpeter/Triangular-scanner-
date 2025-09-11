@@ -1,66 +1,36 @@
-use std::{net::SocketAddr, sync::Arc, collections::HashMap};
-
 use axum::{
-    routing::{get, post},
+    routing::get,
     Router,
 };
-use tokio::sync::RwLock;
+use std::net::SocketAddr;
 use tower_http::services::ServeDir;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber;
 
 mod models;
 mod routes;
-mod logic;
 mod exchanges;
+mod logic;
 mod utils;
-
-use models::{AppState, SharedPrices};
-use routes::scan_handler;
 
 #[tokio::main]
 async fn main() {
-    // init logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    tracing_subscriber::fmt::init();
 
-    // Shared state
-    let state = AppState {
-        prices: Arc::new(RwLock::new(HashMap::new())),
-    };
-
-    // spawn exchange WS clients in background (Binance, Bybit, Kucoin, Gateio)
-    let prices_clone = state.prices.clone();
-    tokio::spawn(async move {
-        exchanges::binance::run_binance_ws(prices_clone).await.ok();
-    });
-
-    let prices_clone = state.prices.clone();
-    tokio::spawn(async move {
-        exchanges::bybit::run_bybit_ws(prices_clone).await.ok();
-    });
-
-    let prices_clone = state.prices.clone();
-    tokio::spawn(async move {
-        exchanges::kucoin::run_kucoin_ws(prices_clone).await.ok();
-    });
-
-    let prices_clone = state.prices.clone();
-    tokio::spawn(async move {
-        exchanges::gateio::run_gateio_ws(prices_clone).await.ok();
-    });
-
-    // build routes
+    // Router: static frontend + API routes
     let app = Router::new()
-        .route("/scan", post(scan_handler))
-        .route_service("/", ServeDir::new("static"))
-        .with_state(state);
+        .nest_service("/", ServeDir::new("static"))
+        .route("/scan", get(routes::scan));
 
-    // start server
-    let addr: SocketAddr = "0.0.0.0:10000".parse().unwrap();
-    tracing::info!("🚀 server running at http://{}", addr);
+    // Render sets PORT env var
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or_else(|_| "10000".to_string())
+        .parse()
+        .expect("PORT must be a number");
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!("listening on {}", addr);
 
     axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app)
         .await
         .unwrap();
-        }
+}
