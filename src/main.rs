@@ -3,8 +3,10 @@ mod models;
 mod exchanges;
 mod logic;
 mod routes;
+mod utils;
 
-use axum::{routing::{get, post}, Router, Server};
+use axum::{routing::{get, post}, Router};
+use hyper::Server;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt};
