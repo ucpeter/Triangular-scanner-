@@ -12,6 +12,9 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
     info!("binance: connecting to {}", url);
 
+    let mut backoff = 2u64;
+    let max_backoff = 60u64;
+
     loop {
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
@@ -19,54 +22,96 @@ pub async fn run_binance_ws(prices: SharedPrices) -> Result<(), Box<dyn std::err
                 let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
+                let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+                ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                while let Some(msg) = read.next().await {
-                    match msg {
-                        Ok(m) => {
-                            if m.is_text() {
-                                if let Ok(txt) = m.into_text() {
-                                    if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&txt) {
-                                        for item in arr {
-                                            let sym = item.get("s").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
-                                            let price_opt = item.get("c")
-                                                .and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok())
-                                                .or_else(|| item.get("c").and_then(|v| v.as_f64()));
-                                            if let Some(price) = price_opt {
-                                                let (base, quote) = split_symbol(&sym);
-                                                if !base.is_empty() && !quote.is_empty() && price > 0.0 {
-                                                    local.insert(sym.clone(), PairPrice { base, quote, price, is_spot: true });
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(m)) => {
+                                    if m.is_text() {
+                                        if let Ok(txt) = m.into_text() {
+                                            // Binance returns an array of tickers for !ticker@arr
+                                            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&txt) {
+                                                for item in arr {
+                                                    let sym = item.get("s").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+                                                    let price_opt = item.get("c")
+                                                        .and_then(|v| v.as_str())
+                                                        .and_then(|s| s.parse::<f64>().ok())
+                                                        .or_else(|| item.get("c").and_then(|v| v.as_f64()));
+                                                    if let Some(price) = price_opt {
+                                                        let (base, quote) = split_symbol(&sym);
+                                                        if !base.is_empty() && !quote.is_empty() && price > 0.0 {
+                                                            local.insert(sym.clone(), PairPrice { base, quote, price, is_spot: true });
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                // sometimes single object; try parse
+                                                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&txt) {
+                                                    if let Some(symv) = map.get("s") {
+                                                        if let Some(sym) = symv.as_str() {
+                                                            let price_opt = map.get("c")
+                                                                .and_then(|v| v.as_str())
+                                                                .and_then(|s| s.parse::<f64>().ok())
+                                                                .or_else(|| map.get("c").and_then(|v| v.as_f64()));
+                                                            if let Some(price) = price_opt {
+                                                                let (base, quote) = split_symbol(&sym.to_uppercase());
+                                                                if !base.is_empty() && !quote.is_empty() && price > 0.0 {
+                                                                    local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                    } else if m.is_ping() {
+                                        // respond with Pong
+                                        if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                            warn!("binance write pong failed: {:?}", e);
+                                        }
+                                    } else if m.is_close() {
+                                        warn!("binance: remote closed");
+                                        break;
                                     }
                                 }
-                            } else if m.is_ping() {
-                                // reply with tungstenite-level Pong using write
-                                if let Err(e) = write.send(Message::Pong(vec![])).await {
-                                    warn!("binance write pong failed: {:?}", e);
+                                Some(Err(e)) => {
+                                    error!("binance ws read error: {:?}", e);
+                                    break;
+                                }
+                                None => {
+                                    warn!("binance read stream ended");
+                                    break;
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("binance ws read error: {:?}", e);
-                            break;
-                        }
-                    }
 
-                    if last_flush.elapsed() >= Duration::from_secs(1) {
-                        let mut guard = prices.write().await;
-                        guard.insert("binance".to_string(), local.values().cloned().collect());
-                        last_flush = Instant::now();
-                    }
-                }
+                            if last_flush.elapsed() >= Duration::from_secs(1) {
+                                let mut guard = prices.write().await;
+                                guard.insert("binance".to_string(), local.values().cloned().collect());
+                                last_flush = Instant::now();
+                            }
+                        }
 
+                        _ = ping_interval.tick() => {
+                            // send client-side ping to keep connection alive
+                            if let Err(e) = write.send(Message::Ping(vec![])).await {
+                                warn!("binance ping send failed: {:?}", e);
+                            }
+                        }
+                    } // select
+                } // inner loop
+
+                backoff = 2; // reset backoff on successful connect
                 warn!("binance disconnected, reconnecting in 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
                 error!("binance connect error: {:?}", e);
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let wait = backoff.min(max_backoff);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                backoff = (backoff * 2).min(max_backoff);
             }
         }
     }
