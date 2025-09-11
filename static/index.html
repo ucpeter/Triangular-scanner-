@@ -1,84 +1,118 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Triangular WS Scanner (Scan on Demand)</title>
+  <meta charset="UTF-8">
+  <title>WS Arbitrage Scanner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { background:#0f1724; color:#e6eef8; font-family:Inter,Arial; padding:20px; }
-    .panel { background:#071028; padding:18px; border-radius:10px; max-width:1100px; margin:0 auto; }
-    label{display:block;color:#9fb0d8;margin-bottom:6px;font-size:13px}
-    select,input{padding:8px;border-radius:6px;border:1px solid #123;background:#08101a;color:#e6eef8}
-    button{background:#2563eb;color:white;padding:10px 14px;border-radius:8px;border:none;cursor:pointer}
-    table{width:100%;border-collapse:collapse;margin-top:12px}
-    th{background:#1e3a8a;color:white;padding:8px;text-align:left}
-    td{padding:8px;border-bottom:1px solid #12222b}
-    .pos{color:#10b981}.neg{color:#ef4444}.muted{color:#94a3b8}
+    body {
+      background-color: #121212;
+      color: #e0e0e0;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      background-color: #1e1e1e;
+      padding: 1rem;
+      text-align: center;
+      font-size: 1.5rem;
+      color: #fff;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      justify-content: center;
+      margin: 1rem;
+    }
+    .controls select, .controls input, .controls button {
+      padding: 0.5rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 1rem;
+    }
+    .controls button {
+      background-color: #1976d2;
+      color: #fff;
+      cursor: pointer;
+    }
+    .controls button:hover {
+      background-color: #1565c0;
+    }
+    table {
+      width: 95%;
+      margin: 1rem auto;
+      border-collapse: collapse;
+      background-color: #1e1e1e;
+      overflow-x: auto;
+      display: block;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+    th, td {
+      padding: 0.75rem;
+      text-align: center;
+      border-bottom: 1px solid #333;
+      white-space: nowrap;
+    }
+    th {
+      background-color: #1976d2;
+      color: #fff;
+      position: sticky;
+      top: 0;
+    }
+    .profit-pos {
+      color: #4caf50;
+      font-weight: bold;
+    }
+    .profit-neg {
+      color: #f44336;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <h2 style="margin:0 0 10px"><span style="background:#e0f2fe;color:#075985;padding:6px 10px;border-radius:6px;">Triangular WS Scanner</span></h2>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-      <div>
-        <label>Exchanges (Ctrl/Cmd+click to multi)</label>
-        <select id="ex" multiple size="5" style="min-width:200px">
-          <option value="binance" selected>Binance</option>
-          <option value="bybit">Bybit</option>
-          <option value="kucoin">KuCoin</option>
-          <option value="gateio">Gate.io</option>
-        </select>
-      </div>
-      <div>
-        <label>Min profit before fees (%)</label>
-        <input id="min" type="number" step="0.1" value="0.3"/>
-      </div>
-      <div>
-        <label>Collect seconds (WS snapshot)</label>
-        <input id="collect" type="number" step="1" value="2"/>
-      </div>
-      <div>
-        <button id="scan">Scan Now</button>
-      </div>
-    </div>
+  <header>WS Arbitrage Scanner</header>
+  <section class="controls">
+    <select id="exchange">
+      <option value="binance">Binance</option>
+      <option value="bybit">Bybit</option>
+      <option value="gateio">Gate.io</option>
+      <option value="kucoin">Kucoin</option>
+    </select>
+    <input id="minProfit" type="number" step="0.1" placeholder="Min profit %" value="0.3">
+    <button onclick="runScan()">Scan</button>
+  </section>
+  <table id="results">
+    <thead>
+      <tr>
+        <th>Route</th>
+        <th>Profit Before</th>
+        <th>Profit After</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
-    <div id="status" style="margin-top:12px;color:#9fd0ff"></div>
-    <div id="results" style="margin-top:12px"></div>
-  </div>
-
-<script>
-document.getElementById('scan').addEventListener('click', async () => {
-  const sel = Array.from(document.getElementById('ex').selectedOptions).map(o => o.value);
-  const min = parseFloat(document.getElementById('min').value) || 0.0;
-  const collect = parseInt(document.getElementById('collect').value) || 2;
-  document.getElementById('status').innerText = 'Scanning...';
-  document.getElementById('results').innerHTML = '';
-  try {
-    const r = await fetch('/scan', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ exchanges: sel, min_profit: min, collect_seconds: collect })
-    });
-    const j = await r.json();
-    document.getElementById('status').innerText = `Pairs fetched: ${j.count_pairs}, Opportunities: ${j.count_opportunities}`;
-    if (j.errors && j.errors.length) {
-      const e = document.createElement('div'); e.style.color='#fca5a5'; e.innerHTML = '<strong>Errors:</strong><br>'+j.errors.join('<br>');
-      document.getElementById('results').appendChild(e);
+  <script>
+    async function runScan() {
+      const exchange = document.getElementById('exchange').value;
+      const minProfit = document.getElementById('minProfit').value;
+      const res = await fetch(`/scan?exchanges=${exchange}&min_profit=${minProfit}`);
+      const data = await res.json();
+      const tbody = document.querySelector("#results tbody");
+      tbody.innerHTML = "";
+      data.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${row.route}</td>
+          <td class="${row.profit_before >= 0 ? 'profit-pos' : 'profit-neg'}">${row.profit_before.toFixed(2)}</td>
+          <td class="${row.profit_after >= 0 ? 'profit-pos' : 'profit-neg'}">${row.profit_after.toFixed(2)}</td>
+        `;
+        tbody.appendChild(tr);
+      });
     }
-    const table = document.createElement('table');
-    table.innerHTML = `<thead><tr><th>#</th><th>Triangle</th><th>Pairs</th><th>Profit before</th><th>Fees</th><th>Profit after</th></tr></thead>`;
-    const tbody = document.createElement('tbody');
-    (j.results||[]).forEach((r, i) => {
-      const tr = document.createElement('tr');
-      const cls = (r.profit_after > 0) ? 'pos' : 'neg';
-      tr.innerHTML = `<td>${i+1}</td><td class="muted">${r.route}</td><td>${r.pairs}</td><td>${r.profit_before.toFixed(2)}</td><td>${r.fee_percent.toFixed(2)}</td><td class="${cls}">${r.profit_after.toFixed(2)}</td>`;
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    document.getElementById('results').appendChild(table);
-  } catch (err) {
-    document.getElementById('status').innerText = 'Scan failed: ' + err;
-  }
-});
-</script>
+  </script>
 </body>
 </html>
