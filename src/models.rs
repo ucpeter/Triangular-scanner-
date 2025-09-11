@@ -1,8 +1,10 @@
-// src/models.rs
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Represents one market pair price
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairPrice {
     pub base: String,
     pub quote: String,
@@ -10,20 +12,28 @@ pub struct PairPrice {
     pub is_spot: bool,
 }
 
-pub type PriceMap = HashMap<String, HashMap<String, f64>>;
-
-#[derive(Debug, Deserialize)]
-pub struct ScanRequest {
-    pub exchanges: Vec<String>,
-    pub min_profit: f64, // percent e.g. 0.3
-    pub collect_seconds: Option<u64>, // optional seconds to collect WS tickers
-}
-
-#[derive(Debug, Serialize)]
-pub struct ArbResult {
-    pub route: String,
+/// Arbitrage scan result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriangularResult {
+    pub path: String,
     pub pairs: String,
     pub profit_before: f64,
-    pub fee_percent: f64,
+    pub fees: f64,
     pub profit_after: f64,
 }
+
+/// Request payload for /scan
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScanRequest {
+    pub exchanges: Vec<String>,
+    pub min_profit: f64,
+}
+
+/// Shared app state
+#[derive(Clone)]
+pub struct AppState {
+    pub prices: SharedPrices,
+}
+
+/// Type alias for shared exchange data
+pub type SharedPrices = Arc<RwLock<HashMap<String, Vec<PairPrice>>>>;
