@@ -1,33 +1,49 @@
-// src/main.rs
-mod models;
-mod exchanges;
-mod logic;
-mod routes;
-mod utils;
-
-use axum::{routing::{get, post}, Router};
-use hyper::Server;
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, fmt};
-use std::env;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+
+mod routes;
+mod exchanges;
+mod models;
+mod logic;
+mod utils;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+    // Initialize tracing for logs
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
-    let state = Arc::new(());
-
+    // Build router
     let app = Router::new()
-        .route("/", get(routes::ui_handler))
         .route("/scan", post(routes::scan_handler))
-        .with_state(state)
-        .merge(Router::new().nest_service("/static", ServeDir::new("static")));
+        .route("/health", get(|| async { "ok" }))
+        .nest_service("/", ServeDir::new("static"))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
 
-    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("invalid addr");
+    // Bind to address
+    let addr = SocketAddr::from(([0, 0, 0, 0], 10000));
+    tracing::info!("listening on {}", addr);
 
-    println!("Starting server on http://0.0.0.0:{}", port);
-    Server::bind(&addr).serve(app.into_make_service()).await.expect("server error");
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("failed to bind");
+
+    axum::serve(listener, app)
+        .await
+        .expect("server error");
 }
