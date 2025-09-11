@@ -1,49 +1,66 @@
+use std::{net::SocketAddr, sync::Arc, collections::HashMap};
+
 use axum::{
     routing::{get, post},
     Router,
 };
-use std::net::SocketAddr;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use tower_http::cors::{Any, CorsLayer};
+use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
+use tracing_subscriber::EnvFilter;
 
-mod routes;
-mod exchanges;
 mod models;
+mod routes;
 mod logic;
+mod exchanges;
 mod utils;
+
+use models::{AppState, SharedPrices};
+use routes::scan_handler;
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing for logs
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
+    // init logging
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // Build router
+    // Shared state
+    let state = AppState {
+        prices: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    // spawn exchange WS clients in background (Binance, Bybit, Kucoin, Gateio)
+    let prices_clone = state.prices.clone();
+    tokio::spawn(async move {
+        exchanges::binance::run_binance_ws(prices_clone).await.ok();
+    });
+
+    let prices_clone = state.prices.clone();
+    tokio::spawn(async move {
+        exchanges::bybit::run_bybit_ws(prices_clone).await.ok();
+    });
+
+    let prices_clone = state.prices.clone();
+    tokio::spawn(async move {
+        exchanges::kucoin::run_kucoin_ws(prices_clone).await.ok();
+    });
+
+    let prices_clone = state.prices.clone();
+    tokio::spawn(async move {
+        exchanges::gateio::run_gateio_ws(prices_clone).await.ok();
+    });
+
+    // build routes
     let app = Router::new()
-        .route("/scan", post(routes::scan_handler))
-        .route("/health", get(|| async { "ok" }))
-        .nest_service("/", ServeDir::new("static"))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
+        .route("/scan", post(scan_handler))
+        .route_service("/", ServeDir::new("static"))
+        .with_state(state);
 
-    // Bind to address
-    let addr = SocketAddr::from(([0, 0, 0, 0], 10000));
-    tracing::info!("listening on {}", addr);
+    // start server
+    let addr: SocketAddr = "0.0.0.0:10000".parse().unwrap();
+    tracing::info!("🚀 server running at http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
+    axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app)
         .await
-        .expect("failed to bind");
-
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
-}
+        .unwrap();
+        }
