@@ -32,10 +32,14 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
     info!("kucoin: connecting to {}", url);
 
     let ws_url = Url::parse(&url)?;
+    let mut backoff = 2u64;
+    let max_backoff = 60u64;
+
     loop {
         match connect_async(ws_url.clone()).await {
-            Ok((mut ws_stream, _)) => {
+            Ok((ws_stream, _)) => {
                 info!("kucoin: connected");
+                let (mut write, mut read) = ws_stream.split();
 
                 // subscribe to all tickers
                 let sub = serde_json::json!({
@@ -44,61 +48,84 @@ pub async fn run_kucoin_ws(prices: SharedPrices) -> Result<(), Box<dyn std::erro
                     "topic":"/market/ticker:all",
                     "response": true
                 });
-                if let Err(e) = ws_stream.send(Message::Text(sub.to_string())).await {
+                if let Err(e) = write.send(Message::Text(sub.to_string())).await {
                     warn!("kucoin subscribe failed: {:?}", e);
                 }
 
-                let (mut write, mut read) = ws_stream.split();
                 let mut local: HashMap<String, PairPrice> = HashMap::new();
                 let mut last_flush = Instant::now();
+                let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+                ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                while let Some(msg) = read.next().await {
-                    match msg {
-                        Ok(m) => {
-                            if m.is_text() {
-                                if let Ok(txt) = m.into_text() {
-                                    if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                                        // Kucoin: data often inside "data" -> "symbol","price"
-                                        if let Some(data) = v.get("data") {
-                                            if let (Some(sym), Some(price_v)) = (data.get("symbol"), data.get("price")) {
-                                                if let (Some(sym), Some(price_str)) = (sym.as_str(), price_v.as_str()) {
-                                                    if let Ok(price) = price_str.parse::<f64>() {
-                                                        if price > 0.0 {
-                                                            if let Some((base, quote)) = parse_symbol(sym) {
-                                                                local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(m)) => {
+                                    if m.is_text() {
+                                        if let Ok(txt) = m.into_text() {
+                                            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                                // Kucoin: data often inside "data" -> "symbol","price"
+                                                if let Some(data) = v.get("data") {
+                                                    if let (Some(sym), Some(price_v)) = (data.get("symbol"), data.get("price")) {
+                                                        if let (Some(sym), Some(price_str)) = (sym.as_str(), price_v.as_str()) {
+                                                            if let Ok(price) = price_str.parse::<f64>() {
+                                                                if price > 0.0 {
+                                                                    if let Some((base, quote)) = parse_symbol(sym) {
+                                                                        local.insert(sym.to_uppercase(), PairPrice { base, quote, price, is_spot: true });
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+                                    } else if m.is_ping() {
+                                        // reply with Pong
+                                        if let Err(e) = write.send(Message::Pong(vec![])).await {
+                                            warn!("kucoin write pong failed: {:?}", e);
+                                        }
+                                    } else if m.is_close() {
+                                        warn!("kucoin: remote closed");
+                                        break;
                                     }
                                 }
-                            } else if m.is_ping() {
-                                if let Err(e) = write.send(Message::Pong(vec![])).await {
-                                    warn!("kucoin write pong failed: {:?}", e);
+                                Some(Err(e)) => {
+                                    error!("kucoin ws read error: {:?}", e);
+                                    break;
+                                }
+                                None => {
+                                    warn!("kucoin read ended");
+                                    break;
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("kucoin ws read error: {:?}", e);
-                            break;
-                        }
-                    }
 
-                    if last_flush.elapsed() >= Duration::from_secs(1) {
-                        let mut guard = prices.write().await;
-                        guard.insert("kucoin".to_string(), local.values().cloned().collect());
-                        last_flush = Instant::now();
-                    }
-                }
+                            if last_flush.elapsed() >= Duration::from_secs(1) {
+                                let mut guard = prices.write().await;
+                                guard.insert("kucoin".to_string(), local.values().cloned().collect());
+                                last_flush = Instant::now();
+                            }
+                        }
 
+                        _ = ping_interval.tick() => {
+                            // Kucoin expects client-side ping at times
+                            if let Err(e) = write.send(Message::Ping(vec![])).await {
+                                warn!("kucoin ping failed: {:?}", e);
+                            }
+                        }
+                    } // select
+                } // inner loop
+
+                backoff = 2;
                 warn!("kucoin disconnected, reconnect in 2s");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(e) => {
                 error!("kucoin connect error: {:?}", e);
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let wait = backoff.min(max_backoff);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                backoff = (backoff * 2).min(max_backoff);
             }
         }
     }
