@@ -1,7 +1,9 @@
 // src/logic.rs
 use crate::models::{PairPrice, ArbResult, PriceMap};
 use std::collections::{HashMap, HashSet};
+use crate::utils::round2;
 
+/// Build price adjacency map from pair list
 pub fn build_price_map(pairs: &[PairPrice]) -> PriceMap {
     let mut m: PriceMap = HashMap::new();
     for p in pairs {
@@ -58,9 +60,9 @@ pub fn scan_triangles(price_map: &PriceMap, min_profit_before: f64, fee_per_leg:
                     out.push(ArbResult {
                         route: format!("{} → {} → {} → {}", a, b, c, a),
                         pairs: format!("{}/{} | {}/{} | {}/{}", a, b, b, c, c, a),
-                        profit_before: (profit_before * 100.0).round() / 100.0 / 100.0 * 100.0, // keep 2 decimals
-                        fee_percent: total_fee_percent,
-                        profit_after: (profit_after * 100.0).round() / 100.0 / 100.0 * 100.0,
+                        profit_before: round2(profit_before),
+                        fee_percent: round2(total_fee_percent),
+                        profit_after: round2(profit_after),
                     });
                 }
             }
@@ -69,4 +71,4 @@ pub fn scan_triangles(price_map: &PriceMap, min_profit_before: f64, fee_per_leg:
 
     out.sort_by(|x,y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
     out
-                            }
+                        }
