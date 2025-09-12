@@ -1,32 +1,41 @@
-use axum::{extract::Query, Json};
+use axum::{Json, Router, routing::post};
 use serde::Deserialize;
-use crate::models::{TriangularResult, PairPrice};
-use crate::logic::find_triangular_opportunities;
-use crate::exchanges::collect_exchange_snapshot;
+use serde_json::json;
 use tracing::info;
 
-#[derive(Debug, Deserialize)]
-pub struct ScanQuery {
-    pub exchange: Option<String>,
-    pub min_profit: Option<f64>,
-    pub collect_seconds: Option<u64>,
+use crate::models::{PairPrice, TriangularResult};
+use crate::exchanges::collect_exchange_snapshot;
+use crate::arbitrage::find_triangular_opportunities;
+
+#[derive(Deserialize)]
+pub struct ScanRequest {
+    exchanges: Vec<String>,
+    min_profit: f64,
 }
 
-pub async fn scan_handler(Query(params): Query<ScanQuery>) -> Json<Vec<TriangularResult>> {
-    let exchange = params.exchange.unwrap_or_else(|| "binance".to_string());
-    let min_profit = params.min_profit.unwrap_or(0.3);
-    let collect_window = params.collect_seconds.unwrap_or(2);
+/// POST /scan
+pub async fn scan(Json(payload): Json<ScanRequest>) -> Json<serde_json::Value> {
+    info!("Received scan request for exchanges: {:?}", payload.exchanges);
 
-    info!(
-        "Received scan request exchange={} min_profit={} collect_seconds={}",
-        exchange, min_profit, collect_window
-    );
+    let mut all_pairs: Vec<PairPrice> = Vec::new();
 
-    // 1. fetch snapshot (using WS wrapper you already have)
-    let pairs: Vec<PairPrice> = collect_exchange_snapshot(&exchange, collect_window).await;
+    for ex in &payload.exchanges {
+        let snapshot = collect_exchange_snapshot(ex, 5).await; // collect for 5s per exchange
+        all_pairs.extend(snapshot);
+    }
 
-    // 2. run triangular arbitrage logic
-    let results = find_triangular_opportunities(&pairs, min_profit);
+    let results: Vec<TriangularResult> =
+        find_triangular_opportunities(&all_pairs, payload.min_profit);
 
-    Json(results)
+    Json(json!({
+        "status": "ok",
+        "count": results.len(),
+        "results": results
+    }))
+}
+
+/// Build router
+pub fn routes() -> Router {
+    Router::new()
+        .route("/scan", post(scan))
 }
