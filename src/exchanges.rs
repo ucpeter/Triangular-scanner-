@@ -2,7 +2,9 @@ use crate::models::PairPrice;
 use tokio::time::{Duration, Instant};
 use tracing::{info, warn, error};
 use futures_util::{StreamExt, SinkExt};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
+// Depending on your version, you might need `connect::connect_async`
+use tokio_tungstenite::connect_async;
 use serde_json::Value;
 use chrono::Utc;
 
@@ -12,7 +14,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
         "binance" => "wss://stream.binance.com:9443/ws/!ticker@arr",
         "bybit"   => "wss://stream.bybit.com/v5/public/spot",
         "gateio"  => "wss://api.gateio.ws/ws/v4/",
-        "kucoin"  => "wss://ws-api-spot.kucoin.com/", // ✅ no fake token
+        "kucoin"  => "wss://ws-api-spot.kucoin.com/?token=public",
         _ => {
             warn!("Unknown exchange {}, defaulting to Binance", exchange);
             "wss://stream.binance.com:9443/ws/!ticker@arr"
@@ -24,7 +26,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
 
     match connect_async(url).await {
         Ok((mut ws_stream, _)) => {
-            // Subscribe messages where required
+            // For Bybit & Gateio, we must send a subscription
             if exchange == "bybit" {
                 let sub = serde_json::json!({
                     "op": "subscribe",
@@ -40,7 +42,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                 });
                 let _ = ws_stream.send(Message::Text(sub.to_string())).await;
             } else if exchange == "kucoin" {
-                // ⚠️ Real Kucoin requires REST for token; here we just try
                 let sub = serde_json::json!({
                     "id":"scanner",
                     "type":"subscribe",
@@ -62,7 +63,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                         if let Ok(txt) = m.into_text() {
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 match exchange {
-                                    // -------- Binance --------
                                     "binance" => {
                                         if let Value::Array(arr) = v {
                                             for it in arr {
@@ -79,7 +79,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
-                                    // -------- Bybit --------
                                     "bybit" => {
                                         if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
                                             if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
@@ -98,7 +97,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
-                                    // -------- Gate.io --------
                                     "gateio" => {
                                         if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
                                             if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
@@ -121,7 +119,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
-                                    // -------- Kucoin --------
                                     "kucoin" => {
                                         if let Some(data) = v.get("data") {
                                             if let (Some(sym), Some(price_str)) =
@@ -162,9 +159,9 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
 
 /// Very simple symbol splitter for Binance-style symbols (e.g., BTCUSDT).
 fn split_symbol(sym: &str) -> (String, String) {
-    let suffixes = ["USDT", "BUSD", "USDC", "BTC", "ETH"];
+    let suffixes: [&str; 5] = ["USDT", "BUSD", "USDC", "BTC", "ETH"];
     let s = sym.to_uppercase();
-    for suf in &suffixes {
+    for suf in suffixes.iter() {
         if s.ends_with(suf) && s.len() > suf.len() {
             let base = s[..s.len() - suf.len()].to_string();
             return (base, suf.to_string());
