@@ -11,6 +11,5 @@ pub struct PairPrice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriangularResult {
     pub route: String,
-    pub profit_before: f64,
-    pub profit_after: f64,
+    pub profit_pct: f64,
 }
