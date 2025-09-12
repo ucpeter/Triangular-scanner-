@@ -1,62 +1,95 @@
 use crate::models::{PairPrice, TriangularResult};
+use std::collections::{HashMap, HashSet};
 
-/// Finds triangular arbitrage opportunities from a list of pairs.
-/// Returns only those above `min_profit` percentage.
-pub fn find_triangular_opportunities(
-    pairs: &Vec<PairPrice>,
-    min_profit: f64,
-) -> Vec<TriangularResult> {
-    let mut results = Vec::new();
+/// Find triangular opportunities from a list of spot pair prices.
+/// - `pairs`: list of PairPrice (base, quote, price)
+/// - `min_profit`: minimum profit BEFORE fees (percent)
+pub fn find_triangular_opportunities(pairs: &Vec<PairPrice>, min_profit: f64) -> Vec<TriangularResult> {
+    // Build rate map and neighbor adjacency (only spot and valid prices)
+    let mut rate: HashMap<(String, String), f64> = HashMap::new();
+    let mut neighbors: HashMap<String, HashSet<String>> = HashMap::new();
 
-    // Build lookup map for quick price access
-    let mut map = std::collections::HashMap::new();
     for p in pairs {
-        map.insert((p.base.clone(), p.quote.clone()), p.price);
+        if !p.is_spot { continue; }
+        if !p.price.is_finite() || p.price <= 0.0 { continue; }
+
+        let a = p.base.to_uppercase();
+        let b = p.quote.to_uppercase();
+
+        rate.insert((a.clone(), b.clone()), p.price);
+        neighbors.entry(a.clone()).or_default().insert(b.clone());
+
+        // add inverse edge
+        if p.price > 0.0 {
+            rate.insert((b.clone(), a.clone()), 1.0 / p.price);
+            neighbors.entry(b.clone()).or_default().insert(a.clone());
+        }
     }
 
-    // Brute-force triangular search: A/B, B/C, C/A
-    for a in &map {
-        let (base_a, quote_a) = (&(a.0).0, &(a.0).1);
-        let price_a = a.1;
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    let mut out: Vec<TriangularResult> = Vec::new();
 
-        for b in &map {
-            let (base_b, quote_b) = (&(b.0).0, &(b.0).1);
-            let price_b = b.1;
+    // fee per leg (percent). Adjust if you calculate fees elsewhere.
+    let fee_per_leg = 0.10_f64; // 0.10% per trade as default
+    let fee_factor = 1.0 - (fee_per_leg / 100.0);
+    let total_fee_factor = fee_factor * fee_factor * fee_factor;
+    // total fee percent (for reporting if needed) = 3 * fee_per_leg
 
-            if quote_a != base_b {
-                continue;
-            }
+    // Iterate over triples A -> B -> C -> A
+    for a in neighbors.keys() {
+        let a = a.clone();
+        if let Some(bs) = neighbors.get(&a) {
+            for b in bs {
+                if a == *b { continue; }
+                if let Some(cs) = neighbors.get(b) {
+                    for c in cs {
+                        if c == &a || c == b { continue; }
+                        // ensure c -> a exists
+                        if !neighbors.get(c).map_or(false, |set| set.contains(&a)) { continue; }
 
-            for c in &map {
-                let (base_c, quote_c) = (&(c.0).0, &(c.0).1);
-                let price_c = c.1;
+                        // fetch rates safely
+                        let r1 = match rate.get(&(a.clone(), b.clone())) { Some(v) => *v, None => continue };
+                        let r2 = match rate.get(&(b.clone(), c.clone())) { Some(v) => *v, None => continue };
+                        let r3 = match rate.get(&(c.clone(), a.clone())) { Some(v) => *v, None => continue };
 
-                if quote_b != base_c {
-                    continue;
-                }
-                if quote_c != base_a {
-                    continue;
-                }
+                        if !r1.is_finite() || !r2.is_finite() || !r3.is_finite() { continue; }
+                        if r1 <= 0.0 || r2 <= 0.0 || r3 <= 0.0 { continue; }
 
-                // Simulate starting with 1 unit of base_a
-                let amount = 1.0;
-                let forward = amount * price_a * price_b * price_c;
+                        let cycle = r1 * r2 * r3;
+                        let profit_before = (cycle - 1.0) * 100.0;
 
-                // Profit percentage
-                let profit_pct = (forward - amount) / amount * 100.0;
+                        // sanity checks
+                        if !profit_before.is_finite() { continue; }
+                        if profit_before < min_profit { continue; }
 
-                if profit_pct >= min_profit {
-                    results.push(TriangularResult {
-                        route: format!(
-                            "{} -> {} -> {} -> {}",
-                            base_a, quote_a, quote_b, quote_c
-                        ),
-                        profit_pct,
-                    });
+                        let profit_after = (cycle * total_fee_factor - 1.0) * 100.0;
+                        if !profit_after.is_finite() { continue; }
+
+                        // canonical dedupe (rotations)
+                        let reps = vec![
+                            (a.clone(), b.clone(), c.clone()),
+                            (b.clone(), c.clone(), a.clone()),
+                            (c.clone(), a.clone(), b.clone()),
+                        ];
+                        let key = reps.iter().min().unwrap().clone();
+                        if !seen.insert(key) { continue; }
+
+                        // round to 2 decimal places for nicer output
+                        let profit_before_rounded = (profit_before * 100.0).round() / 100.0;
+                        let profit_after_rounded  = (profit_after  * 100.0).round() / 100.0;
+
+                        out.push(TriangularResult {
+                            route: format!("{} → {} → {} → {}", a, b, c, a),
+                            profit_before: profit_before_rounded,
+                            profit_after: profit_after_rounded,
+                        });
+                    }
                 }
             }
         }
     }
 
-    results
-            }
+    // sort by profit_after desc
+    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
+    out
+                }
