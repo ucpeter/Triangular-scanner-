@@ -1,5 +1,6 @@
 use crate::models::{PairPrice, TriangularResult};
 use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
 
 /// Find triangular opportunities from a list of spot pair prices.
 /// - `pairs`: list of PairPrice (base, quote, price)
@@ -29,11 +30,11 @@ pub fn find_triangular_opportunities(pairs: &Vec<PairPrice>, min_profit: f64) ->
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
     let mut out: Vec<TriangularResult> = Vec::new();
 
-    // fee per leg (percent). Adjust if you calculate fees elsewhere.
+    // fee per leg (percent). Change if you calculate fees elsewhere.
     let fee_per_leg = 0.10_f64; // 0.10% per trade as default
     let fee_factor = 1.0 - (fee_per_leg / 100.0);
     let total_fee_factor = fee_factor * fee_factor * fee_factor;
-    // total fee percent (for reporting if needed) = 3 * fee_per_leg
+    // total fee percent (for reporting) would be 3.0 * fee_per_leg
 
     // Iterate over triples A -> B -> C -> A
     for a in neighbors.keys() {
@@ -76,12 +77,11 @@ pub fn find_triangular_opportunities(pairs: &Vec<PairPrice>, min_profit: f64) ->
 
                         // round to 2 decimal places for nicer output
                         let profit_before_rounded = (profit_before * 100.0).round() / 100.0;
-                        let profit_after_rounded  = (profit_after  * 100.0).round() / 100.0;
+                        // let profit_after_rounded  = (profit_after  * 100.0).round() / 100.0;
 
                         out.push(TriangularResult {
                             route: format!("{} → {} → {} → {}", a, b, c, a),
-                            profit_before: profit_before_rounded,
-                            profit_after: profit_after_rounded,
+                            profit_pct: profit_before_rounded, // matches your TriangularResult field
                         });
                     }
                 }
@@ -89,7 +89,10 @@ pub fn find_triangular_opportunities(pairs: &Vec<PairPrice>, min_profit: f64) ->
         }
     }
 
-    // sort by profit_after desc
-    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
+    // sort by profit_pct desc (higher profits first)
+    out.sort_by(|x, y| {
+        y.profit_pct.partial_cmp(&x.profit_pct).unwrap_or(Ordering::Equal)
+    });
+
     out
-                }
+        }
