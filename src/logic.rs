@@ -1,36 +1,62 @@
 use crate::models::{PairPrice, TriangularResult};
-use std::collections::HashMap;
 
-pub fn find_triangular_arbitrage(prices: Vec<PairPrice>) -> Vec<TriangularResult> {
-    let mut out = Vec::new();
-    let mut map: HashMap<(String,String), f64> = HashMap::new();
+/// Finds triangular arbitrage opportunities from a list of pairs.
+/// Returns only those above `min_profit` percentage.
+pub fn find_triangular_opportunities(
+    pairs: &Vec<PairPrice>,
+    min_profit: f64,
+) -> Vec<TriangularResult> {
+    let mut results = Vec::new();
 
-    for p in &prices {
+    // Build lookup map for quick price access
+    let mut map = std::collections::HashMap::new();
+    for p in pairs {
         map.insert((p.base.clone(), p.quote.clone()), p.price);
     }
 
-    for a in ["USDT","BTC","ETH","BUSD"] {
-        for b in ["USDT","BTC","ETH","BUSD"] {
-            for c in ["USDT","BTC","ETH","BUSD"] {
-                if a == b || b == c || a == c { continue; }
-                if let (Some(p1), Some(p2), Some(p3)) = (
-                    map.get(&(a.to_string(), b.to_string())),
-                    map.get(&(b.to_string(), c.to_string())),
-                    map.get(&(c.to_string(), a.to_string())),
-                ) {
-                    let start = 100.0;
-                    let result = start / p1 * p2 * p3;
-                    if result > start {
-                        out.push(TriangularResult {
-                            route: format!("{} -> {} -> {} -> {}", a, b, c, a),
-                            profit_before: result - start,
-                            profit_after: result - start,
-                        });
-                    }
+    // Brute-force triangular search: A/B, B/C, C/A
+    for a in &map {
+        let (base_a, quote_a) = (&(a.0).0, &(a.0).1);
+        let price_a = a.1;
+
+        for b in &map {
+            let (base_b, quote_b) = (&(b.0).0, &(b.0).1);
+            let price_b = b.1;
+
+            if quote_a != base_b {
+                continue;
+            }
+
+            for c in &map {
+                let (base_c, quote_c) = (&(c.0).0, &(c.0).1);
+                let price_c = c.1;
+
+                if quote_b != base_c {
+                    continue;
+                }
+                if quote_c != base_a {
+                    continue;
+                }
+
+                // Simulate starting with 1 unit of base_a
+                let amount = 1.0;
+                let forward = amount * price_a * price_b * price_c;
+
+                // Profit percentage
+                let profit_pct = (forward - amount) / amount * 100.0;
+
+                if profit_pct >= min_profit {
+                    results.push(TriangularResult {
+                        route: format!(
+                            "{} -> {} -> {} -> {}",
+                            base_a, quote_a, quote_b, quote_c
+                        ),
+                        profit_pct,
+                    });
                 }
             }
         }
     }
 
-    out
-                        }
+    results
+            }
