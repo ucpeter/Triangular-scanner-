@@ -1,268 +1,100 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Triangular WS Scanner — Scan on Demand</title>
-<style>
-  :root{
-    --bg:#0b1220; --panel:#071129; --muted:#9fb0d8; --blue:#1563d6; --card:#0f1a27;
-    --pos:#10b981; --neg:#ef4444; --white:#e6eef8;
-  }
-  body{background:var(--bg);color:var(--white);font-family:Inter,Arial,Helvetica,sans-serif;margin:0;padding:18px}
-  .wrap{max-width:1100px;margin:0 auto}
-  .title{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-  .logo-box{background:#e6f6ff;color:#036; padding:8px 12px;border-radius:8px;font-weight:700}
-  h1{font-size:18px;margin:0}
-  .panel{background:var(--panel);padding:14px;border-radius:10px;box-shadow:0 8px 24px rgba(2,6,23,0.6)}
-  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px}
-  label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}
-  select,input{background:var(--card);color:var(--white);border:1px solid rgba(255,255,255,0.03);padding:8px;border-radius:8px;min-width:160px}
-  select:focus,input:focus{outline:2px solid rgba(21,99,214,0.18)}
-  .small-input{min-width:110px}
-  .btn{background:var(--blue);color:#fff;padding:10px 14px;border-radius:8px;border:0;cursor:pointer;font-weight:700}
-  .btn.secondary{background:#334155}
-  .btn[disabled]{opacity:.6;cursor:default}
-  #status{color:var(--muted);margin-top:10px;font-size:13px}
-  #resultsWrap{margin-top:14px}
-  table{width:100%;border-collapse:collapse;overflow:auto;display:block;max-height:62vh}
-  thead th{background:var(--blue);color:#fff;padding:8px;text-align:left;position:sticky;top:0}
-  tbody td{padding:10px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:13px;white-space:nowrap}
-  td.small{font-size:12px;color:var(--muted)}
-  .pos{color:var(--pos);font-weight:700}
-  .neg{color:var(--neg);font-weight:700}
-  .muted{color:var(--muted)}
-  .debug{background:#071826;border:1px solid rgba(255,255,255,0.02);padding:10px;border-radius:8px;margin-top:12px;font-size:13px;color:#cfe9ff}
-  .debug pre{white-space:pre-wrap;max-height:220px;overflow:auto}
-  details summary{cursor:pointer;color:var(--muted)}
-  @media(max-width:720px){
-    .controls{flex-direction:column;align-items:stretch}
-    select,input{width:100%}
-    .small-input{min-width:100%}
-  }
-</style>
+  <meta charset="UTF-8" />
+  <title>Arbitrage Scanner</title>
+  <style>
+    body {
+      background: #111;
+      color: #eee;
+      font-family: Arial, sans-serif;
+      text-align: center;
+    }
+    .container {
+      margin-top: 50px;
+    }
+    select, input, button {
+      padding: 10px;
+      margin: 5px;
+      border-radius: 5px;
+      border: none;
+      font-size: 14px;
+    }
+    button {
+      background: #0077ff;
+      color: white;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #005fcc;
+    }
+    #results, #debug {
+      margin-top: 20px;
+      background: #222;
+      padding: 15px;
+      border-radius: 8px;
+      width: 80%;
+      margin-left: auto;
+      margin-right: auto;
+      text-align: left;
+      white-space: pre-wrap;
+    }
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="title">
-    <div class="logo-box">Triangular WS Scanner</div>
-    <h1 class="muted">Scan on Demand — WebSocket snapshot</h1>
+  <div class="container">
+    <h1>Arbitrage Scanner</h1>
+
+    <!-- Exchange dropdown -->
+    <label for="exchange">Select Exchange:</label>
+    <select id="exchange">
+      <option value="binance">Binance</option>
+      <option value="bybit">Bybit</option>
+      <option value="gateio">Gate.io</option>
+      <option value="kucoin">Kucoin</option>
+    </select>
+
+    <!-- Minimum profit input -->
+    <label for="profit">Min Profit %:</label>
+    <input id="profit" type="number" value="0" step="0.1" />
+
+    <!-- Scan button -->
+    <button onclick="scan()">Scan</button>
+
+    <!-- Debug + Results -->
+    <div id="debug">Debug area...</div>
+    <div id="results">Results will appear here...</div>
   </div>
 
-  <div class="panel">
-    <div class="controls">
-      <div>
-        <label for="exchange">Exchange</label>
-        <select id="exchange" aria-label="Exchange selector">
-          <option value="binance" selected>Binance</option>
-          <option value="bybit">Bybit</option>
-          <option value="kucoin">KuCoin</option>
-          <option value="gateio">Gate.io</option>
-        </select>
-      </div>
+  <script>
+    async function scan() {
+      const exchange = document.getElementById("exchange").value;
+      const minProfit = parseFloat(document.getElementById("profit").value) || 0;
 
-      <div>
-        <label for="minProfit">Min profit before fees (%)</label>
-        <input id="minProfit" type="number" step="0.1" value="0.3" />
-      </div>
+      const payload = {
+        exchanges: [exchange],
+        min_profit: minProfit
+      };
 
-      <div>
-        <label for="collectSec">Collect window (seconds)</label>
-        <input id="collectSec" class="small-input" type="number" step="1" value="2" />
-      </div>
+      try {
+        const res = await fetch("/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
 
-      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
-        <div style="display:flex;gap:8px;">
-          <button id="scanBtn" class="btn">Scan Now</button>
-          <button id="testBtn" class="btn secondary">Test /scan</button>
-        </div>
-      </div>
-    </div>
+        if (!res.ok) {
+          document.getElementById("debug").innerText = `POST /scan failed: ${res.status}`;
+          return;
+        }
 
-    <div id="status" aria-live="polite">Ready — choose options and tap Scan</div>
-
-    <div id="resultsWrap" style="display:none">
-      <table id="resultsTable" role="table" aria-live="polite">
-        <thead>
-          <tr>
-            <th style="width:42px">#</th>
-            <th>Triangle Route</th>
-            <th>Pairs</th>
-            <th style="width:120px">Profit before (%)</th>
-            <th style="width:90px">Fees (%)</th>
-            <th style="width:120px">Profit after (%)</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <details style="margin-top:10px" open>
-      <summary>Debug / Response</summary>
-      <div class="debug">
-        <div id="debugStatus" class="muted">Idle</div>
-        <pre id="debugRaw">No activity yet.</pre>
-      </div>
-    </details>
-  </div>
-</div>
-
-<script>
-(function(){
-  const scanBtn = document.getElementById('scanBtn');
-  const testBtn = document.getElementById('testBtn');
-  const statusEl = document.getElementById('status');
-  const debugStatus = document.getElementById('debugStatus');
-  const debugRaw = document.getElementById('debugRaw');
-  const resultsWrap = document.getElementById('resultsWrap');
-  const resultsBody = document.querySelector('#resultsTable tbody');
-
-  function setStatus(msg, isError=false){
-    statusEl.textContent = msg;
-    statusEl.style.color = isError ? '#fca5a5' : '#9fd0ff';
-  }
-  function logDebug(title, text){
-    debugStatus.textContent = title;
-    debugRaw.textContent = text;
-  }
-
-  function buildPayload(){
-    const exchange = document.getElementById('exchange').value;
-    const min_profit = parseFloat(document.getElementById('minProfit').value) || 0;
-    const collect_seconds = parseInt(document.getElementById('collectSec').value) || 2;
-    return { exchange, min_profit, collect_seconds };
-  }
-
-  async function fetchWithTimeout(resource, options = {}) {
-    const { timeout = 18000 } = options;
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    try {
-      const res = await fetch(resource, {...options, signal: controller.signal});
-      clearTimeout(id);
-      return res;
-    } catch (e) {
-      clearTimeout(id);
-      throw e;
-    }
-  }
-
-  function normalizeResults(payload){
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    if (payload.results && Array.isArray(payload.results)) return payload.results;
-    for (const k of ['results','data','opportunities']) {
-      if (Array.isArray(payload[k])) return payload[k];
-    }
-    for (const v of Object.values(payload)) {
-      if (Array.isArray(v)) return v;
-    }
-    return [];
-  }
-
-  function renderTable(rows){
-    resultsBody.innerHTML = '';
-    if (!rows.length) {
-      resultsWrap.style.display = 'none';
-      setStatus('No opportunities found', false);
-      return;
-    }
-    rows.forEach((r,i) => {
-      const route = r.route || r.triangle || r.route_name || '';
-      const pairs = r.pairs || r.pair_str || r.pairs_list || r.pairs_text || r.pairs || '';
-      const before = Number.isFinite(r.profit_before) ? r.profit_before : (Number.isFinite(r.profit_before_fees) ? r.profit_before_fees : (r.profit_before ? Number(r.profit_before) : NaN));
-      const after  = Number.isFinite(r.profit_after) ? r.profit_after : (Number.isFinite(r.profit_after_fees) ? r.profit_after_fees : (r.profit_after ? Number(r.profit_after) : NaN));
-      const fees   = Number.isFinite(r.fees) ? r.fees : (Number.isFinite(r.trade_fees) ? r.trade_fees : (r.fee_percent ? r.fee_percent : '—'));
-
-      const beforeText = Number.isFinite(before) ? before.toFixed(2) : '—';
-      const afterText  = Number.isFinite(after) ? after.toFixed(2) : '—';
-      const feesText   = typeof fees === 'number' ? fees.toFixed(2) : fees;
-
-      const clsAfter = Number(after) > 0 ? 'pos' : 'neg';
-
-      const row = document.createElement('tr');
-      row.innerHTML = `
-        <td class="small">${i+1}</td>
-        <td class="small">${route}</td>
-        <td class="small">${pairs}</td>
-        <td class="small">${beforeText}</td>
-        <td class="small">${feesText}</td>
-        <td class="small ${clsAfter}">${afterText}</td>
-      `;
-      resultsBody.appendChild(row);
-    });
-    resultsWrap.style.display = 'block';
-    setStatus(`Found ${rows.length} opportunities`);
-  }
-
-  async function doScan(){
-    scanBtn.disabled = true;
-    testBtn.disabled = true;
-    const origText = scanBtn.textContent;
-    scanBtn.textContent = 'Scanning…';
-    setStatus('Scanning — collecting WS snapshots (this may take a few seconds)');
-
-    const payload = buildPayload();
-    logDebug('Payload', JSON.stringify(payload, null, 2));
-
-    // Build GET URL
-    const params = new URLSearchParams();
-    params.set('exchanges', payload.exchange);
-    params.set('min_profit', String(payload.min_profit));
-    params.set('collect_seconds', String(payload.collect_seconds));
-    const url = '/scan?' + params.toString();
-
-    try {
-      const res = await fetchWithTimeout(url, { method: 'GET', timeout: 20000 });
-      const text = await res.text();
-      logDebug(`GET /scan (status ${res.status})`, text);
-
-      if (res.ok && (res.headers.get('content-type')?.includes('application/json') || text.trim().startsWith('{') || text.trim().startsWith('['))) {
-        let json;
-        try { json = JSON.parse(text); } catch(e){ json = null; }
-        const rows = normalizeResults(json);
-        renderTable(rows);
-      } else {
-        // non-JSON or error
-        setStatus('Scan failed — backend returned non-JSON or error', true);
+        const data = await res.json();
+        document.getElementById("debug").innerText = "POST /scan success ✅";
+        document.getElementById("results").innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        document.getElementById("debug").innerText = `Error: ${err}`;
       }
-    } catch (err) {
-      logDebug('Fetch error', err.toString());
-      setStatus('Scan failed: ' + (err.message || err), true);
-    } finally {
-      scanBtn.disabled = false;
-      testBtn.disabled = false;
-      scanBtn.textContent = origText;
     }
-  }
-
-  // quick test button: call GET /scan base to check route
-  async function testRoute(){
-    testBtn.disabled = true;
-    setStatus('Testing /scan (GET)...');
-    try {
-      const res = await fetch('/scan');
-      const t = await res.text();
-      logDebug('/scan GET (status ' + res.status + ')', t);
-      if (res.ok && (res.headers.get('content-type')?.includes('application/json') || t.trim().startsWith('{') || t.trim().startsWith('['))){
-        setStatus('/scan exists and returned JSON');
-      } else {
-        setStatus('/scan returned non-JSON or error — ensure /scan is defined and returns JSON', true);
-      }
-    } catch (e) {
-      logDebug('test error', e.toString());
-      setStatus('Test failed: ' + e.message, true);
-    } finally {
-      testBtn.disabled = false;
-    }
-  }
-
-  scanBtn.addEventListener('click', doScan);
-  testBtn.addEventListener('click', testRoute);
-
-  setStatus('Ready — choose exchange & collect window, then tap Scan');
-  logDebug('Idle','No requests yet');
-})();
-</script>
+  </script>
 </body>
-  </html>
+</html>
