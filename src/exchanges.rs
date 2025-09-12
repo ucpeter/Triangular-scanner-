@@ -4,6 +4,7 @@ use tracing::{info, warn, error};
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use serde_json::Value;
+use chrono::Utc;
 
 /// Collects a snapshot of market prices for a given exchange over a few seconds.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
@@ -11,7 +12,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
         "binance" => "wss://stream.binance.com:9443/ws/!ticker@arr",
         "bybit"   => "wss://stream.bybit.com/v5/public/spot",
         "gateio"  => "wss://api.gateio.ws/ws/v4/",
-        "kucoin"  => "wss://ws-api-spot.kucoin.com/?token=public",
+        "kucoin"  => "wss://ws-api-spot.kucoin.com/", // ✅ no fake token
         _ => {
             warn!("Unknown exchange {}, defaulting to Binance", exchange);
             "wss://stream.binance.com:9443/ws/!ticker@arr"
@@ -23,7 +24,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
 
     match connect_async(url).await {
         Ok((mut ws_stream, _)) => {
-            // For Bybit & Gateio, we must send a subscription
+            // Subscribe messages where required
             if exchange == "bybit" {
                 let sub = serde_json::json!({
                     "op": "subscribe",
@@ -32,13 +33,14 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                 let _ = ws_stream.send(Message::Text(sub.to_string())).await;
             } else if exchange == "gateio" {
                 let sub = serde_json::json!({
-                    "time": chrono::Utc::now().timestamp_millis(),
+                    "time": Utc::now().timestamp_millis(),
                     "channel":"spot.tickers",
                     "event":"subscribe",
                     "payload":[]
                 });
                 let _ = ws_stream.send(Message::Text(sub.to_string())).await;
             } else if exchange == "kucoin" {
+                // ⚠️ Real Kucoin requires REST for token; here we just try
                 let sub = serde_json::json!({
                     "id":"scanner",
                     "type":"subscribe",
@@ -60,6 +62,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                         if let Ok(txt) = m.into_text() {
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 match exchange {
+                                    // -------- Binance --------
                                     "binance" => {
                                         if let Value::Array(arr) = v {
                                             for it in arr {
@@ -76,6 +79,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
+                                    // -------- Bybit --------
                                     "bybit" => {
                                         if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
                                             if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
@@ -94,6 +98,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
+                                    // -------- Gate.io --------
                                     "gateio" => {
                                         if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
                                             if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
@@ -116,6 +121,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             }
                                         }
                                     }
+                                    // -------- Kucoin --------
                                     "kucoin" => {
                                         if let Some(data) = v.get("data") {
                                             if let (Some(sym), Some(price_str)) =
@@ -175,4 +181,4 @@ fn parse_symbol(sym: &str) -> Option<(String,String)> {
     } else {
         None
     }
-            }
+                                                    }
