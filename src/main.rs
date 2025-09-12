@@ -1,34 +1,33 @@
-use axum::{
-    routing::{get},
-    Router,
-};
-use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
+use axum::{Router, routing::get};
 use tower_http::services::ServeDir;
+use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod routes;
 mod models;
 mod exchanges;
-mod logic;
+mod arbitrage;
 mod utils;
+mod routes;
 
 #[tokio::main]
 async fn main() {
+    // Init tracing logs
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "arbitrage_scanner=debug,tower_http=debug".into()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Build app with /scan and static UI
     let app = Router::new()
-        .route("/scan", get(routes::scan_handler))
+        .merge(routes::routes())
         .nest_service("/", ServeDir::new("static"))
-        .layer(CorsLayer::new().allow_origin(Any));
+        .route("/health", get(|| async { "ok" }));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 10000));
-    tracing::info!("listening on http://{}", addr);
+    // Bind to port
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    tracing::info!("Server listening on {}", addr);
 
     axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app)
         .await
