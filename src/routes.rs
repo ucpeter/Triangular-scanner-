@@ -1,7 +1,7 @@
 use axum::{
     extract::Json,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::post,
     Router,
 };
@@ -37,6 +37,16 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Response {
         results.extend(opps);
     }
 
-    // ✅ Manually build a Response (Axum 0.7 compatible)
-    (StatusCode::OK, axum::Json(results)).into_response()
-    }
+    // ✅ Serialize results to JSON string manually
+    let body = match serde_json::to_string(&results) {
+        Ok(json) => json,
+        Err(_) => "[]".to_string(),
+    };
+
+    // ✅ Build the response manually
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+            }
