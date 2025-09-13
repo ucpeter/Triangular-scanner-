@@ -1,6 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PairPrice {
     pub base: String,
     pub quote: String,
@@ -8,8 +6,11 @@ pub struct PairPrice {
     pub is_spot: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TriangularResult {
-    pub route: String,
-    pub profit_pct: f64,
+    pub triangle: (String, String, String),
+    pub pairs: (PairPrice, PairPrice, PairPrice),
+    pub profit_before: f64,
+    pub fees: f64,
+    pub profit_after: f64,
 }
