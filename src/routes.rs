@@ -1,7 +1,7 @@
 use axum::{
     extract::Json,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::post,
     Router,
 };
@@ -9,8 +9,7 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::exchanges::collect_exchange_snapshot;
-use crate::logic::find_triangular_opportunities;
-use crate::logic::TriangularResult;
+use crate::logic::{find_triangular_opportunities, TriangularResult};
 use crate::models::PairPrice;
 
 pub fn routes() -> Router {
@@ -24,7 +23,7 @@ struct ScanRequest {
     collect_seconds: u64,
 }
 
-async fn scan_handler(Json(req): Json<ScanRequest>) -> impl IntoResponse {
+async fn scan_handler(Json(req): Json<ScanRequest>) -> Response {
     info!(
         "scan request: exchanges={:?} min_profit={} collect_seconds={}",
         req.exchanges, req.min_profit, req.collect_seconds
@@ -38,6 +37,6 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> impl IntoResponse {
         results.extend(opps);
     }
 
-    // ✅ Explicit JSON response
-    (StatusCode::OK, axum::Json(results))
-            }
+    // ✅ Manually build a Response (Axum 0.7 compatible)
+    (StatusCode::OK, axum::Json(results)).into_response()
+    }
