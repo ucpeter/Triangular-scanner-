@@ -28,8 +28,10 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
     for exch in req.exchanges {
         let pairs: Vec<PairPrice> = collect_exchange_snapshot(&exch, req.collect_seconds).await;
         let opps = find_triangular_opportunities(&exch, pairs, req.min_profit);
-        results.extend(opps);
+
+        // convert to owned values if opps is Vec<&TriangularResult>
+        results.extend(opps.into_iter().cloned());
     }
 
     Json(results)
-}
+    }
