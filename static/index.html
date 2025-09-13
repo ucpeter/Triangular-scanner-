@@ -1,179 +1,118 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>WS Arbitrage Scanner</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arbitrage Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body { background: #0d1117; color: #c9d1d9; font-family: sans-serif; }
-    .container { max-width: 900px; margin: 30px auto; padding: 10px; }
-
-    h1 { text-align: center; color: #58a6ff; margin-bottom: 20px; }
-
-    /* Controls layout */
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-    .controls label { display: block; margin-bottom: 5px; font-size: 14px; }
-    .controls input, .controls select, .controls button {
-      padding: 8px;
-      border-radius: 6px;
-      border: none;
-      font-size: 14px;
-    }
-    .controls input, .controls select { background: #161b22; color: #c9d1d9; }
-    .controls button {
-      background: #238636;
-      color: white;
-      cursor: pointer;
-    }
-    .controls button:hover { background: #2ea043; }
-
-    /* Mobile: column layout */
-    @media (max-width: 768px) {
-      .controls { flex-direction: column; }
-      .controls > div, .controls button { width: 100%; }
-    }
-
-    /* Desktop: row layout */
-    @media (min-width: 769px) {
-      .controls { flex-direction: row; align-items: flex-end; }
-      .controls > div { flex: 1; }
-    }
-
-    /* Results table */
-    #results-container {
-      display: none;
-      margin-top: 20px;
-      overflow: auto;
-      max-height: 400px;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 700px;
-    }
-    thead {
-      background: #1f6feb;
-      color: white;
-    }
-    thead th {
-      padding: 10px;
-      border: 1px solid #30363d;
-      text-align: left;
+    /* Sticky first column (row numbers) */
+    .sticky-col {
       position: sticky;
-      top: 0;              /* Sticky header */
+      left: 0;
+      background-color: #1f2937; /* match dark theme */
       z-index: 2;
     }
-    tbody td {
-      padding: 8px;
-      border: 1px solid #30363d;
+    thead .sticky-col {
+      z-index: 3; /* keep header above body */
     }
-
-    /* Alternating row colors */
-    tbody tr:nth-child(even) { background-color: #161b22; }
-    tbody tr:nth-child(odd) { background-color: #0d1117; }
-
-    /* Profit color coding */
-    .profit-positive { color: #2ea043; font-weight: bold; }
-    .profit-negative { color: #f85149; font-weight: bold; }
-    .profit-zero { color: #8b949e; font-weight: bold; }
   </style>
 </head>
-<body>
-  <div class="container">
-    <h1>Arbitrage Scanner</h1>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
+  <h1 class="text-2xl font-bold mb-4">Arbitrage Scanner</h1>
 
-    <div class="controls">
-      <div>
-        <label for="exchange">Exchange</label>
-        <select id="exchange">
-          <option value="binance">Binance</option>
-          <option value="bybit">Bybit</option>
-          <option value="gateio">Gate.io</option>
-          <option value="kucoin">Kucoin</option>
-        </select>
-      </div>
-      <div>
-        <label for="profit">Min Profit %</label>
-        <input type="number" id="profit" value="0" step="0.1" />
-      </div>
-      <div>
-        <label for="collect">Collect Window (s)</label>
-        <input type="number" id="collect" value="2" step="1" />
-      </div>
-      <button onclick="scan()">Scan</button>
-    </div>
+  <!-- Scan Controls -->
+  <div class="w-full max-w-6xl mb-6">
+    <h2 class="text-xl font-semibold mb-2">Scan Controls</h2>
+    <div class="flex flex-col md:flex-row gap-3">
+      <!-- Exchange Selection -->
+      <select id="exchangeSelect" class="p-2 bg-gray-800 border border-gray-600 rounded">
+        <option value="binance">Binance</option>
+        <option value="bybit">Bybit</option>
+        <option value="gateio">Gate.io</option>
+        <option value="kucoin">Kucoin</option>
+      </select>
 
-    <div id="results-container">
-      <table id="results-table">
-        <thead>
-          <tr>
-            <th>Triangle</th>
-            <th>Pairs</th>
-            <th>Profit% Before Fee</th>
-            <th>Fee</th>
-            <th>Profit% After Fee</th>
-          </tr>
-        </thead>
-        <tbody id="results-body"></tbody>
-      </table>
+      <!-- Minimum Profit Input -->
+      <input id="minProfit" type="number" step="0.01" value="0"
+             class="p-2 bg-gray-800 border border-gray-600 rounded"
+             placeholder="Min Profit %">
+
+      <!-- Collect Window Input -->
+      <input id="collectWindow" type="number" step="1" value="5"
+             class="p-2 bg-gray-800 border border-gray-600 rounded"
+             placeholder="Collect Window (sec)">
+
+      <!-- Scan Button -->
+      <button id="scanBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded">
+        Scan
+      </button>
     </div>
   </div>
 
+  <!-- Results Table -->
+  <div id="resultsContainer" class="w-full max-w-6xl overflow-auto hidden" style="max-height: 400px;">
+    <table class="table-auto border-collapse border border-gray-700 w-full">
+      <thead class="bg-blue-600">
+        <tr>
+          <th class="sticky-col border border-gray-700 px-4 py-2">#</th>
+          <th class="border border-gray-700 px-4 py-2">Triangle</th>
+          <th class="border border-gray-700 px-4 py-2">Pairs</th>
+          <th class="border border-gray-700 px-4 py-2">Profit % Before Fee</th>
+          <th class="border border-gray-700 px-4 py-2">Fee</th>
+          <th class="border border-gray-700 px-4 py-2">Profit % After Fee</th>
+        </tr>
+      </thead>
+      <tbody id="resultsTable" class="divide-y divide-gray-700"></tbody>
+    </table>
+  </div>
+
   <script>
-    async function scan() {
-      const exchange = document.getElementById("exchange").value;
-      const profit = parseFloat(document.getElementById("profit").value);
-      const collect = parseInt(document.getElementById("collect").value);
+    document.getElementById("scanBtn").addEventListener("click", async () => {
+      const exchange = document.getElementById("exchangeSelect").value;
+      const minProfit = parseFloat(document.getElementById("minProfit").value) || 0;
+      const collectWindow = parseInt(document.getElementById("collectWindow").value) || 5;
 
       const payload = {
         exchanges: [exchange],
-        min_profit: profit,
-        collect_seconds: collect
+        min_profit: minProfit,
+        collect_seconds: collectWindow,
       };
 
-      const res = await fetch("/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
+      try {
+        const res = await fetch("/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
 
-      if (res.ok) {
         const data = await res.json();
-        const tbody = document.getElementById("results-body");
-        tbody.innerHTML = "";
+        const tableBody = document.getElementById("resultsTable");
+        tableBody.innerHTML = "";
 
         if (data.length > 0) {
-          data.forEach(item => {
-            const profitAfter = item.profit_after || 0;
-            let profitClass = "profit-zero";
-            if (profitAfter > 0) profitClass = "profit-positive";
-            else if (profitAfter < 0) profitClass = "profit-negative";
-
+          document.getElementById("resultsContainer").classList.remove("hidden");
+          data.forEach((op, index) => {
             const row = document.createElement("tr");
             row.innerHTML = `
-              <td>${item.triangle || "-"}</td>
-              <td>${item.pairs || "-"}</td>
-              <td>${item.profit_before?.toFixed(2) || "0"}%</td>
-              <td>${item.fee || "0.300"}%</td>
-              <td class="${profitClass}">${profitAfter.toFixed(2)}%</td>
+              <td class="sticky-col border border-gray-700 px-4 py-2 bg-gray-900">${index + 1}</td>
+              <td class="border border-gray-700 px-4 py-2">${op.triangle.join(" → ")}</td>
+              <td class="border border-gray-700 px-4 py-2">${op.pairs.base}/${op.pairs.quote}</td>
+              <td class="border border-gray-700 px-4 py-2">${op.profit_before.toFixed(2)}%</td>
+              <td class="border border-gray-700 px-4 py-2">${op.fees.toFixed(2)}%</td>
+              <td class="border border-gray-700 px-4 py-2">${op.profit_after.toFixed(2)}%</td>
             `;
-            tbody.appendChild(row);
+            tableBody.appendChild(row);
           });
-          document.getElementById("results-container").style.display = "block";
         } else {
-          document.getElementById("results-container").style.display = "none";
+          document.getElementById("resultsContainer").classList.add("hidden");
+          alert("No opportunities found.");
         }
-      } else {
-        alert("Scan failed: " + res.status);
+      } catch (err) {
+        console.error("Scan failed:", err);
+        alert("Scan request failed.");
       }
-    }
+    });
   </script>
 </body>
-</html>
+    </html>
