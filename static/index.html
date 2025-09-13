@@ -1,118 +1,196 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
   <title>Arbitrage Scanner</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* Sticky first column (row numbers) */
-    .sticky-col {
+    body {
+      background-color: #121212;
+      color: #e0e0e0;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .control {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 150px;
+    }
+    label {
+      margin-bottom: 5px;
+      font-size: 14px;
+      color: #bbb;
+    }
+    select, input, button {
+      padding: 8px;
+      border-radius: 4px;
+      border: none;
+      font-size: 14px;
+    }
+    select, input {
+      background-color: #1e1e1e;
+      color: #e0e0e0;
+    }
+    button {
+      background-color: #0288d1;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0277bd;
+    }
+    .loading {
+      margin: 10px 0;
+      font-style: italic;
+      color: #aaa;
+    }
+    .results {
+      display: none;
+      overflow: auto;
+      max-height: 500px;
+      border: 1px solid #333;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 800px;
+    }
+    th, td {
+      border: 1px solid #333;
+      padding: 8px;
+      text-align: center;
+    }
+    th {
+      background-color: #0288d1;
+      color: #fff;
       position: sticky;
-      left: 0;
-      background-color: #1f2937; /* match dark theme */
+      top: 0;
       z-index: 2;
     }
-    thead .sticky-col {
-      z-index: 3; /* keep header above body */
+    td:first-child, th:first-child {
+      position: sticky;
+      left: 0;
+      background-color: #1e1e1e;
+      z-index: 3;
+    }
+    /* Row striping */
+    tbody tr:nth-child(odd) {
+      background-color: #1e1e1e;
+    }
+    tbody tr:nth-child(even) {
+      background-color: #2a2a2a;
+    }
+    /* Hover highlight */
+    tbody tr:hover {
+      background-color: #333 !important;
     }
   </style>
 </head>
-<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
-  <h1 class="text-2xl font-bold mb-4">Arbitrage Scanner</h1>
+<body>
+  <h1>Arbitrage Scanner</h1>
 
-  <!-- Scan Controls -->
-  <div class="w-full max-w-6xl mb-6">
-    <h2 class="text-xl font-semibold mb-2">Scan Controls</h2>
-    <div class="flex flex-col md:flex-row gap-3">
-      <!-- Exchange Selection -->
-      <select id="exchangeSelect" class="p-2 bg-gray-800 border border-gray-600 rounded">
+  <div class="controls">
+    <div class="control">
+      <label for="exchange">Exchange</label>
+      <select id="exchange">
         <option value="binance">Binance</option>
         <option value="bybit">Bybit</option>
         <option value="gateio">Gate.io</option>
         <option value="kucoin">Kucoin</option>
       </select>
+    </div>
 
-      <!-- Minimum Profit Input -->
-      <input id="minProfit" type="number" step="0.01" value="0"
-             class="p-2 bg-gray-800 border border-gray-600 rounded"
-             placeholder="Min Profit %">
+    <div class="control">
+      <label for="minProfit">Minimum Profit %</label>
+      <input id="minProfit" type="number" step="0.1" value="0" />
+    </div>
 
-      <!-- Collect Window Input -->
-      <input id="collectWindow" type="number" step="1" value="5"
-             class="p-2 bg-gray-800 border border-gray-600 rounded"
-             placeholder="Collect Window (sec)">
+    <div class="control">
+      <label for="collectSeconds">Collect Window (seconds)</label>
+      <input id="collectSeconds" type="number" value="5" />
+    </div>
 
-      <!-- Scan Button -->
-      <button id="scanBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded">
-        Scan
-      </button>
+    <div class="control">
+      <label>&nbsp;</label>
+      <button id="scanBtn">Scan</button>
     </div>
   </div>
 
-  <!-- Results Table -->
-  <div id="resultsContainer" class="w-full max-w-6xl overflow-auto hidden" style="max-height: 400px;">
-    <table class="table-auto border-collapse border border-gray-700 w-full">
-      <thead class="bg-blue-600">
+  <div class="loading" id="loading" style="display:none;">Scanning exchange...</div>
+
+  <div class="results" id="results">
+    <table>
+      <thead>
         <tr>
-          <th class="sticky-col border border-gray-700 px-4 py-2">#</th>
-          <th class="border border-gray-700 px-4 py-2">Triangle</th>
-          <th class="border border-gray-700 px-4 py-2">Pairs</th>
-          <th class="border border-gray-700 px-4 py-2">Profit % Before Fee</th>
-          <th class="border border-gray-700 px-4 py-2">Fee</th>
-          <th class="border border-gray-700 px-4 py-2">Profit % After Fee</th>
+          <th>#</th>
+          <th>Triangle</th>
+          <th>Pairs</th>
+          <th>Profit % Before Fee</th>
+          <th>Fees %</th>
+          <th>Profit % After Fee</th>
         </tr>
       </thead>
-      <tbody id="resultsTable" class="divide-y divide-gray-700"></tbody>
+      <tbody id="resultsBody"></tbody>
     </table>
   </div>
 
   <script>
     document.getElementById("scanBtn").addEventListener("click", async () => {
-      const exchange = document.getElementById("exchangeSelect").value;
-      const minProfit = parseFloat(document.getElementById("minProfit").value) || 0;
-      const collectWindow = parseInt(document.getElementById("collectWindow").value) || 5;
+      const exchange = document.getElementById("exchange").value;
+      const minProfit = parseFloat(document.getElementById("minProfit").value);
+      const collectSeconds = parseInt(document.getElementById("collectSeconds").value);
 
-      const payload = {
-        exchanges: [exchange],
-        min_profit: minProfit,
-        collect_seconds: collectWindow,
-      };
+      document.getElementById("loading").style.display = "block";
+      document.getElementById("results").style.display = "none";
 
       try {
         const res = await fetch("/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            exchanges: [exchange],
+            min_profit: minProfit,
+            collect_seconds: collectSeconds,
+          }),
         });
 
+        if (!res.ok) throw new Error("Scan request failed");
         const data = await res.json();
-        const tableBody = document.getElementById("resultsTable");
-        tableBody.innerHTML = "";
 
-        if (data.length > 0) {
-          document.getElementById("resultsContainer").classList.remove("hidden");
-          data.forEach((op, index) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `
-              <td class="sticky-col border border-gray-700 px-4 py-2 bg-gray-900">${index + 1}</td>
-              <td class="border border-gray-700 px-4 py-2">${op.triangle.join(" → ")}</td>
-              <td class="border border-gray-700 px-4 py-2">${op.pairs.base}/${op.pairs.quote}</td>
-              <td class="border border-gray-700 px-4 py-2">${op.profit_before.toFixed(2)}%</td>
-              <td class="border border-gray-700 px-4 py-2">${op.fees.toFixed(2)}%</td>
-              <td class="border border-gray-700 px-4 py-2">${op.profit_after.toFixed(2)}%</td>
-            `;
-            tableBody.appendChild(row);
-          });
-        } else {
-          document.getElementById("resultsContainer").classList.add("hidden");
-          alert("No opportunities found.");
-        }
-      } catch (err) {
-        console.error("Scan failed:", err);
-        alert("Scan request failed.");
+        const body = document.getElementById("resultsBody");
+        body.innerHTML = "";
+
+        data.forEach((op, idx) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${idx + 1}</td>
+            <td>${op.triangle.join(" → ")}</td>
+            <td>${op.pairs.0.base}/${op.pairs.0.quote}, ${op.pairs.1.base}/${op.pairs.1.quote}, ${op.pairs.2.base}/${op.pairs.2.quote}</td>
+            <td>${op.profit_before.toFixed(2)}%</td>
+            <td>${op.fees.toFixed(2)}%</td>
+            <td>${op.profit_after.toFixed(2)}%</td>
+          `;
+          body.appendChild(row);
+        });
+
+        document.getElementById("results").style.display = "block";
+      } catch (e) {
+        alert("Error: " + e.message);
+      } finally {
+        document.getElementById("loading").style.display = "none";
       }
     });
   </script>
 </body>
-    </html>
+  </html>
