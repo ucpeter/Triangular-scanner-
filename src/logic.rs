@@ -1,7 +1,8 @@
 use crate::models::PairPrice;
 use std::collections::HashMap;
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TriangularResult {
     pub triangle: (String, String, String),
     pub pairs: (PairPrice, PairPrice, PairPrice),
@@ -36,7 +37,16 @@ pub fn find_triangular_opportunities(
         map.insert((p.base.clone(), p.quote.clone()), p.price);
     }
 
-    let symbols: Vec<String> = pairs.iter().map(|p| p.base.clone()).collect();
+    // Collect symbol list (unique bases and quotes)
+    let mut symbols: Vec<String> = Vec::new();
+    for p in &pairs {
+        if !symbols.contains(&p.base) {
+            symbols.push(p.base.clone());
+        }
+        if !symbols.contains(&p.quote) {
+            symbols.push(p.quote.clone());
+        }
+    }
 
     for a in &symbols {
         for b in &symbols {
@@ -50,6 +60,8 @@ pub fn find_triangular_opportunities(
                     map.get(&(b.clone(), c.clone())),
                     map.get(&(c.clone(), a.clone())),
                 ) {
+                    // Start with 1 unit of A
+                    // A -> B using A/B price: amount_B = amount_A / price(A/B)
                     let start = 1.0;
                     let after1 = start / p1;
                     let after2 = after1 / p2;
@@ -58,7 +70,8 @@ pub fn find_triangular_opportunities(
                     let profit_before = (after3 - start) / start * 100.0;
 
                     if profit_before > min_profit {
-                        let fees = 3.0 * fee_rate * 100.0; // three trades
+                        // fees expressed as percentage points (3 trades)
+                        let fees = 3.0 * fee_rate * 100.0;
                         let profit_after = profit_before - fees;
 
                         if profit_after > min_profit {
@@ -82,6 +95,6 @@ pub fn find_triangular_opportunities(
         }
     }
 
-    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap());
+    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
     out
-            }
+        }
