@@ -3,8 +3,8 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::exchanges::collect_exchange_snapshot;
-use crate::logic::find_triangular_opportunities;
-use crate::models::{TriangularResult, PairPrice};
+use crate::logic::{find_triangular_opportunities, TriangularResult};
+use crate::models::PairPrice;
 
 pub fn routes() -> Router {
     Router::new().route("/scan", post(scan_handler))
@@ -28,10 +28,8 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
     for exch in req.exchanges {
         let pairs: Vec<PairPrice> = collect_exchange_snapshot(&exch, req.collect_seconds).await;
         let opps = find_triangular_opportunities(&exch, pairs, req.min_profit);
-
-        // convert to owned values if opps is Vec<&TriangularResult>
-        results.extend(opps.into_iter().cloned());
+        results.extend(opps);
     }
 
     Json(results)
-    }
+}
