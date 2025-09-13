@@ -1,98 +1,87 @@
-use crate::models::{PairPrice, TriangularResult};
-use std::collections::{HashMap, HashSet};
-use std::cmp::Ordering;
+use crate::models::PairPrice;
+use std::collections::HashMap;
 
-/// Find triangular opportunities from a list of spot pair prices.
-/// - `pairs`: list of PairPrice (base, quote, price)
-/// - `min_profit`: minimum profit BEFORE fees (percent)
-pub fn find_triangular_opportunities(pairs: &Vec<PairPrice>, min_profit: f64) -> Vec<TriangularResult> {
-    // Build rate map and neighbor adjacency (only spot and valid prices)
-    let mut rate: HashMap<(String, String), f64> = HashMap::new();
-    let mut neighbors: HashMap<String, HashSet<String>> = HashMap::new();
+#[derive(Debug, Clone)]
+pub struct TriangularResult {
+    pub triangle: (String, String, String),
+    pub pairs: (PairPrice, PairPrice, PairPrice),
+    pub profit_before: f64,
+    pub fees: f64,
+    pub profit_after: f64,
+}
 
-    for p in pairs {
-        if !p.is_spot { continue; }
-        if !p.price.is_finite() || p.price <= 0.0 { continue; }
+/// Static taker fees (as fractions, e.g. 0.001 = 0.1%)
+fn exchange_fee(exchange: &str) -> f64 {
+    match exchange {
+        "binance" => 0.001, // 0.1%
+        "bybit"   => 0.001, // 0.1%
+        "gateio"  => 0.002, // 0.2%
+        "kucoin"  => 0.001, // 0.1%
+        _ => 0.001,         // default 0.1%
+    }
+}
 
-        let a = p.base.to_uppercase();
-        let b = p.quote.to_uppercase();
+/// Very simple triangular arbitrage finder
+pub fn find_triangular_opportunities(
+    exchange: &str,
+    pairs: Vec<PairPrice>,
+    min_profit: f64,
+) -> Vec<TriangularResult> {
+    let mut out: Vec<TriangularResult> = Vec::new();
+    let fee_rate = exchange_fee(exchange);
 
-        rate.insert((a.clone(), b.clone()), p.price);
-        neighbors.entry(a.clone()).or_default().insert(b.clone());
-
-        // add inverse edge
-        if p.price > 0.0 {
-            rate.insert((b.clone(), a.clone()), 1.0 / p.price);
-            neighbors.entry(b.clone()).or_default().insert(a.clone());
-        }
+    // Build lookup: base+quote -> price
+    let mut map: HashMap<(String, String), f64> = HashMap::new();
+    for p in &pairs {
+        map.insert((p.base.clone(), p.quote.clone()), p.price);
     }
 
-    let mut seen: HashSet<(String, String, String)> = HashSet::new();
-    let mut out: Vec<TriangularResult> = Vec::new();
+    let symbols: Vec<String> = pairs.iter().map(|p| p.base.clone()).collect();
 
-    // fee per leg (percent). Change if you calculate fees elsewhere.
-    let fee_per_leg = 0.10_f64; // 0.10% per trade as default
-    let fee_factor = 1.0 - (fee_per_leg / 100.0);
-    let total_fee_factor = fee_factor * fee_factor * fee_factor;
-    // total fee percent (for reporting) would be 3.0 * fee_per_leg
+    for a in &symbols {
+        for b in &symbols {
+            if a == b { continue; }
+            for c in &symbols {
+                if c == a || c == b { continue; }
 
-    // Iterate over triples A -> B -> C -> A
-    for a in neighbors.keys() {
-        let a = a.clone();
-        if let Some(bs) = neighbors.get(&a) {
-            for b in bs {
-                if a == *b { continue; }
-                if let Some(cs) = neighbors.get(b) {
-                    for c in cs {
-                        if c == &a || c == b { continue; }
-                        // ensure c -> a exists
-                        if !neighbors.get(c).map_or(false, |set| set.contains(&a)) { continue; }
+                // Path: A/B -> B/C -> C/A
+                if let (Some(p1), Some(p2), Some(p3)) = (
+                    map.get(&(a.clone(), b.clone())),
+                    map.get(&(b.clone(), c.clone())),
+                    map.get(&(c.clone(), a.clone())),
+                ) {
+                    let start = 1.0;
+                    let after1 = start / p1;
+                    let after2 = after1 / p2;
+                    let after3 = after2 * p3;
 
-                        // fetch rates safely
-                        let r1 = match rate.get(&(a.clone(), b.clone())) { Some(v) => *v, None => continue };
-                        let r2 = match rate.get(&(b.clone(), c.clone())) { Some(v) => *v, None => continue };
-                        let r3 = match rate.get(&(c.clone(), a.clone())) { Some(v) => *v, None => continue };
+                    let profit_before = (after3 - start) / start * 100.0;
 
-                        if !r1.is_finite() || !r2.is_finite() || !r3.is_finite() { continue; }
-                        if r1 <= 0.0 || r2 <= 0.0 || r3 <= 0.0 { continue; }
+                    if profit_before > min_profit {
+                        let fees = 3.0 * fee_rate * 100.0; // three trades
+                        let profit_after = profit_before - fees;
 
-                        let cycle = r1 * r2 * r3;
-                        let profit_before = (cycle - 1.0) * 100.0;
-
-                        // sanity checks
-                        if !profit_before.is_finite() { continue; }
-                        if profit_before < min_profit { continue; }
-
-                        let profit_after = (cycle * total_fee_factor - 1.0) * 100.0;
-                        if !profit_after.is_finite() { continue; }
-
-                        // canonical dedupe (rotations)
-                        let reps = vec![
-                            (a.clone(), b.clone(), c.clone()),
-                            (b.clone(), c.clone(), a.clone()),
-                            (c.clone(), a.clone(), b.clone()),
-                        ];
-                        let key = reps.iter().min().unwrap().clone();
-                        if !seen.insert(key) { continue; }
-
-                        // round to 2 decimal places for nicer output
-                        let profit_before_rounded = (profit_before * 100.0).round() / 100.0;
-                        // let profit_after_rounded  = (profit_after  * 100.0).round() / 100.0;
-
-                        out.push(TriangularResult {
-                            route: format!("{} → {} → {} → {}", a, b, c, a),
-                            profit_pct: profit_before_rounded, // matches your TriangularResult field
-                        });
+                        if profit_after > min_profit {
+                            if let (Some(pp1), Some(pp2), Some(pp3)) = (
+                                pairs.iter().find(|p| p.base == *a && p.quote == *b),
+                                pairs.iter().find(|p| p.base == *b && p.quote == *c),
+                                pairs.iter().find(|p| p.base == *c && p.quote == *a),
+                            ) {
+                                out.push(TriangularResult {
+                                    triangle: (a.clone(), b.clone(), c.clone()),
+                                    pairs: (pp1.clone(), pp2.clone(), pp3.clone()),
+                                    profit_before,
+                                    fees,
+                                    profit_after,
+                                });
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // sort by profit_pct desc (higher profits first)
-    out.sort_by(|x, y| {
-        y.profit_pct.partial_cmp(&x.profit_pct).unwrap_or(Ordering::Equal)
-    });
-
+    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap());
     out
-        }
+            }
