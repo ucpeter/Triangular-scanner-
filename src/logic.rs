@@ -1,8 +1,7 @@
 use crate::models::PairPrice;
 use std::collections::HashMap;
-use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TriangularResult {
     pub triangle: (String, String, String),
     pub pairs: (PairPrice, PairPrice, PairPrice),
@@ -11,18 +10,18 @@ pub struct TriangularResult {
     pub profit_after: f64,
 }
 
-/// Static taker fees (as fractions, e.g. 0.001 = 0.1%)
+/// Static taker fees (fractions, e.g. 0.001 = 0.1%)
 fn exchange_fee(exchange: &str) -> f64 {
     match exchange {
         "binance" => 0.001, // 0.1%
-        "bybit"   => 0.001, // 0.1%
+        "bybit"   => 0.001,
         "gateio"  => 0.002, // 0.2%
-        "kucoin"  => 0.001, // 0.1%
-        _ => 0.001,         // default 0.1%
+        "kucoin"  => 0.001,
+        _ => 0.001,
     }
 }
 
-/// Very simple triangular arbitrage finder
+/// Triangular arbitrage finder with inverse market support
 pub fn find_triangular_opportunities(
     exchange: &str,
     pairs: Vec<PairPrice>,
@@ -31,22 +30,21 @@ pub fn find_triangular_opportunities(
     let mut out: Vec<TriangularResult> = Vec::new();
     let fee_rate = exchange_fee(exchange);
 
-    // Build lookup: base+quote -> price
+    // Build lookup: base+quote -> price (+ inverse if missing)
     let mut map: HashMap<(String, String), f64> = HashMap::new();
     for p in &pairs {
         map.insert((p.base.clone(), p.quote.clone()), p.price);
+
+        if p.price > 0.0 {
+            map.entry((p.quote.clone(), p.base.clone()))
+                .or_insert(1.0 / p.price);
+        }
     }
 
-    // Collect symbol list (unique bases and quotes)
-    let mut symbols: Vec<String> = Vec::new();
-    for p in &pairs {
-        if !symbols.contains(&p.base) {
-            symbols.push(p.base.clone());
-        }
-        if !symbols.contains(&p.quote) {
-            symbols.push(p.quote.clone());
-        }
-    }
+    let symbols: Vec<String> = pairs
+        .iter()
+        .flat_map(|p| vec![p.base.clone(), p.quote.clone()])
+        .collect();
 
     for a in &symbols {
         for b in &symbols {
@@ -60,8 +58,6 @@ pub fn find_triangular_opportunities(
                     map.get(&(b.clone(), c.clone())),
                     map.get(&(c.clone(), a.clone())),
                 ) {
-                    // Start with 1 unit of A
-                    // A -> B using A/B price: amount_B = amount_A / price(A/B)
                     let start = 1.0;
                     let after1 = start / p1;
                     let after2 = after1 / p2;
@@ -70,8 +66,7 @@ pub fn find_triangular_opportunities(
                     let profit_before = (after3 - start) / start * 100.0;
 
                     if profit_before > min_profit {
-                        // fees expressed as percentage points (3 trades)
-                        let fees = 3.0 * fee_rate * 100.0;
+                        let fees = 3.0 * fee_rate * 100.0; // 3 trades
                         let profit_after = profit_before - fees;
 
                         if profit_after > min_profit {
@@ -95,6 +90,6 @@ pub fn find_triangular_opportunities(
         }
     }
 
-    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap());
     out
-        }
+                    }
