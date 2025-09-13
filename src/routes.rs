@@ -1,4 +1,4 @@
-use axum::{routing::post, Json, Router};
+use axum::{routing::post, Json, Router, response::IntoResponse, http::StatusCode};
 use serde::Deserialize;
 use tracing::info;
 
@@ -17,7 +17,7 @@ struct ScanRequest {
     collect_seconds: u64,
 }
 
-async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult>> {
+async fn scan_handler(Json(req): Json<ScanRequest>) -> impl IntoResponse {
     info!(
         "scan request: exchanges={:?} min_profit={} collect_seconds={}",
         req.exchanges, req.min_profit, req.collect_seconds
@@ -27,10 +27,9 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
 
     for exch in req.exchanges {
         let pairs: Vec<PairPrice> = collect_exchange_snapshot(&exch, req.collect_seconds).await;
-        // ensure this function returns Vec<TriangularResult> (owned)
-        let opps: Vec<TriangularResult> = find_triangular_opportunities(&exch, pairs, req.min_profit);
-        results.extend(opps); // extend with owned items
+        let mut opps: Vec<TriangularResult> = find_triangular_opportunities(&exch, pairs, req.min_profit);
+        results.append(&mut opps);
     }
 
-    Json(results)
-}
+    (StatusCode::OK, Json(results))
+        }
