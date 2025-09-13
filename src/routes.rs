@@ -11,6 +11,7 @@ use tracing::info;
 use crate::exchanges::collect_exchange_snapshot;
 use crate::logic::{find_triangular_opportunities, TriangularResult};
 use crate::models::PairPrice;
+use axum::body::Body;
 
 pub fn routes() -> Router {
     Router::new().route("/scan", post(scan_handler))
@@ -37,16 +38,17 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Response {
         results.extend(opps);
     }
 
-    // ✅ Serialize results to JSON string manually
     let body = match serde_json::to_string(&results) {
         Ok(json) => json,
-        Err(_) => "[]".to_string(),
+        Err(e) => {
+            tracing::error!("failed to serialize results: {:?}", e);
+            "[]".to_string()
+        }
     };
 
-    // ✅ Build the response manually
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
-        .body(axum::body::Body::from(body))
+        .body(Body::from(body))
         .unwrap()
-            }
+}
