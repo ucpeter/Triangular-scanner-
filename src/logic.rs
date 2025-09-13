@@ -1,7 +1,8 @@
 use crate::models::PairPrice;
+use serde::Serialize;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TriangularResult {
     pub triangle: (String, String, String),
     pub pairs: (PairPrice, PairPrice, PairPrice),
@@ -30,21 +31,22 @@ pub fn find_triangular_opportunities(
     let mut out: Vec<TriangularResult> = Vec::new();
     let fee_rate = exchange_fee(exchange);
 
-    // Build lookup: base+quote -> price (+ inverse if missing)
+    // Build lookup: base+quote -> price (+ inverse)
     let mut map: HashMap<(String, String), f64> = HashMap::new();
     for p in &pairs {
         map.insert((p.base.clone(), p.quote.clone()), p.price);
-
         if p.price > 0.0 {
             map.entry((p.quote.clone(), p.base.clone()))
                 .or_insert(1.0 / p.price);
         }
     }
 
-    let symbols: Vec<String> = pairs
-        .iter()
-        .flat_map(|p| vec![p.base.clone(), p.quote.clone()])
-        .collect();
+    // Build unique symbols list
+    let mut symbols: Vec<String> = Vec::new();
+    for p in &pairs {
+        if !symbols.contains(&p.base) { symbols.push(p.base.clone()); }
+        if !symbols.contains(&p.quote) { symbols.push(p.quote.clone()); }
+    }
 
     for a in &symbols {
         for b in &symbols {
@@ -70,6 +72,7 @@ pub fn find_triangular_opportunities(
                         let profit_after = profit_before - fees;
 
                         if profit_after > min_profit {
+                            // find the original PairPrice structs for presentation
                             if let (Some(pp1), Some(pp2), Some(pp3)) = (
                                 pairs.iter().find(|p| p.base == *a && p.quote == *b),
                                 pairs.iter().find(|p| p.base == *b && p.quote == *c),
@@ -90,6 +93,6 @@ pub fn find_triangular_opportunities(
         }
     }
 
-    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap());
+    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal));
     out
-                    }
+            }
