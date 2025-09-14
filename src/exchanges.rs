@@ -4,27 +4,26 @@ use tracing::{info, warn, error};
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use serde_json::Value;
-use chrono::Utc;
 
-/// Collect a snapshot of market prices for a given exchange.
+/// Collects a snapshot of market prices for a given exchange over a few seconds.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
-    let url: String = match exchange {
-        "binance" => "wss://stream.binance.com:9443/ws/!ticker@arr".to_string(),
-        "bybit"   => "wss://stream.bybit.com/v5/public/spot".to_string(),
-        "gateio"  => "wss://api.gateio.ws/ws/v4/".to_string(),
-        "kucoin"  => "wss://ws-api-spot.kucoin.com/?token=public".to_string(),
+    let url = match exchange {
+        "binance" => "wss://stream.binance.com:9443/ws/!ticker@arr",
+        "bybit"   => "wss://stream.bybit.com/v5/public/spot",
+        "gateio"  => "wss://api.gateio.ws/ws/v4/",
+        "kucoin"  => "wss://ws-api-spot.kucoin.com/?token=public",
         _ => {
             warn!("Unknown exchange {}, defaulting to Binance", exchange);
-            "wss://stream.binance.com:9443/ws/!ticker@arr".to_string()
+            "wss://stream.binance.com:9443/ws/!ticker@arr"
         }
     };
 
     info!("Connecting to {} at {}", exchange, url);
     let mut pairs: Vec<PairPrice> = Vec::new();
 
-    match connect_async(&url).await {
+    match connect_async(url).await {
         Ok((mut ws_stream, _)) => {
-            // 🔹 Send the required subscription message
+            // Send subscriptions if needed
             if exchange == "bybit" {
                 let sub = serde_json::json!({
                     "op": "subscribe",
@@ -33,7 +32,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                 let _ = ws_stream.send(Message::Text(sub.to_string())).await;
             } else if exchange == "gateio" {
                 let sub = serde_json::json!({
-                    "time": Utc::now().timestamp_millis(),
+                    "time": chrono::Utc::now().timestamp_millis(),
                     "channel":"spot.tickers",
                     "event":"subscribe",
                     "payload":[]
@@ -61,10 +60,90 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                         if let Ok(txt) = m.into_text() {
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 match exchange {
-                                    "binance" => handle_binance(&mut pairs, v),
-                                    "bybit"   => handle_bybit(&mut pairs, v),
-                                    "gateio"  => handle_gateio(&mut pairs, v),
-                                    "kucoin"  => handle_kucoin(&mut pairs, v),
+                                    // Binance parser
+                                    "binance" => {
+                                        if let Value::Array(arr) = v {
+                                            for it in arr {
+                                                if let (Some(sym), Some(price)) =
+                                                    (it.get("s").and_then(|v| v.as_str()),
+                                                     it.get("c").and_then(|v| v.as_str())
+                                                                .and_then(|s| s.parse::<f64>().ok()))
+                                                {
+                                                    let (base, quote) = split_symbol(sym);
+                                                    if price > 0.0 && !base.is_empty() {
+                                                        pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                    } else {
+                                                        warn!("{} skipped symbol: {}", exchange, sym);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Bybit parser
+                                    "bybit" => {
+                                        if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
+                                            if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                                                for it in arr {
+                                                    if let (Some(sym), Some(price)) =
+                                                        (it.get("symbol").and_then(|s| s.as_str()),
+                                                         it.get("lastPrice").and_then(|p| p.as_str())
+                                                                            .and_then(|s| s.parse::<f64>().ok()))
+                                                    {
+                                                        let (base, quote) = split_symbol(sym);
+                                                        if price > 0.0 && !base.is_empty() {
+                                                            pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                        } else {
+                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Gateio parser
+                                    "gateio" => {
+                                        if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
+                                            if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
+                                                for it in arr {
+                                                    if let (Some(sym), Some(last)) =
+                                                        (it.get("currency_pair").and_then(|s| s.as_str()),
+                                                         it.get("last").and_then(|s| s.as_f64()))
+                                                    {
+                                                        let parts: Vec<&str> = sym.split('_').collect();
+                                                        if parts.len() == 2 && last > 0.0 {
+                                                            pairs.push(PairPrice {
+                                                                base: parts[0].to_string(),
+                                                                quote: parts[1].to_string(),
+                                                                price: last,
+                                                                is_spot: true
+                                                            });
+                                                        } else {
+                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Kucoin parser
+                                    "kucoin" => {
+                                        if let Some(data) = v.get("data") {
+                                            if let (Some(sym), Some(price_str)) =
+                                                (data.get("symbol").and_then(|s| s.as_str()),
+                                                 data.get("price").and_then(|p| p.as_str()))
+                                            {
+                                                if let Ok(price) = price_str.parse::<f64>() {
+                                                    if price > 0.0 {
+                                                        if let Some((base, quote)) = parse_symbol(sym) {
+                                                            pairs.push(PairPrice { base, quote, price, is_spot: true });
+                                                        } else {
+                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -87,85 +166,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
     pairs
 }
 
-/// Binance parser
-fn handle_binance(pairs: &mut Vec<PairPrice>, v: Value) {
-    if let Value::Array(arr) = v {
-        for it in arr {
-            if let (Some(sym), Some(price)) =
-                (it.get("s").and_then(|v| v.as_str()),
-                 it.get("c").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()))
-            {
-                let (base, quote) = split_symbol(sym);
-                if price > 0.0 && !base.is_empty() {
-                    pairs.push(PairPrice { base, quote, price, is_spot: true });
-                }
-            }
-        }
-    }
-}
-
-/// Bybit parser
-fn handle_bybit(pairs: &mut Vec<PairPrice>, v: Value) {
-    if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
-        if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
-            for it in arr {
-                if let (Some(sym), Some(price)) =
-                    (it.get("symbol").and_then(|s| s.as_str()),
-                     it.get("lastPrice").and_then(|p| p.as_str()).and_then(|s| s.parse::<f64>().ok()))
-                {
-                    let (base, quote) = split_symbol(sym);
-                    if price > 0.0 && !base.is_empty() {
-                        pairs.push(PairPrice { base, quote, price, is_spot: true });
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Gateio parser
-fn handle_gateio(pairs: &mut Vec<PairPrice>, v: Value) {
-    if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
-        if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
-            for it in arr {
-                if let (Some(sym), Some(last)) =
-                    (it.get("currency_pair").and_then(|s| s.as_str()),
-                     it.get("last").and_then(|s| s.as_f64()))
-                {
-                    let parts: Vec<&str> = sym.split('_').collect();
-                    if parts.len() == 2 && last > 0.0 {
-                        pairs.push(PairPrice {
-                            base: parts[0].to_string(),
-                            quote: parts[1].to_string(),
-                            price: last,
-                            is_spot: true
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Kucoin parser
-fn handle_kucoin(pairs: &mut Vec<PairPrice>, v: Value) {
-    if let Some(data) = v.get("data") {
-        if let (Some(sym), Some(price_str)) =
-            (data.get("symbol").and_then(|s| s.as_str()),
-             data.get("price").and_then(|p| p.as_str()))
-        {
-            if let Ok(price) = price_str.parse::<f64>() {
-                if price > 0.0 {
-                    if let Some((base, quote)) = parse_symbol(sym) {
-                        pairs.push(PairPrice { base, quote, price, is_spot: true });
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Split Binance-style symbols
+/// Very simple symbol splitter for Binance-style symbols (e.g., BTCUSDT).
 fn split_symbol(sym: &str) -> (String, String) {
     let suffixes = ["USDT", "BUSD", "USDC", "BTC", "ETH"];
     let s = sym.to_uppercase();
@@ -178,7 +179,7 @@ fn split_symbol(sym: &str) -> (String, String) {
     (String::new(), String::new())
 }
 
-/// Parse Kucoin symbols (BTC-USDT style)
+/// Parses Kucoin symbols (e.g., BTC-USDT).
 fn parse_symbol(sym: &str) -> Option<(String,String)> {
     let parts: Vec<&str> = sym.split('-').collect();
     if parts.len() == 2 {
@@ -186,4 +187,4 @@ fn parse_symbol(sym: &str) -> Option<(String,String)> {
     } else {
         None
     }
-                    }
+                                                    }
