@@ -1,9 +1,9 @@
 use axum::{
-    extract::Json,
-    http::StatusCode,
-    response::Response,
     routing::post,
     Router,
+    extract::Json,
+    response::IntoResponse,
+    http::StatusCode,
 };
 use serde::Deserialize;
 use tracing::info;
@@ -11,7 +11,6 @@ use tracing::info;
 use crate::exchanges::collect_exchange_snapshot;
 use crate::logic::{find_triangular_opportunities, TriangularResult};
 use crate::models::PairPrice;
-use axum::body::Body;
 
 pub fn routes() -> Router {
     Router::new().route("/scan", post(scan_handler))
@@ -24,7 +23,7 @@ struct ScanRequest {
     collect_seconds: u64,
 }
 
-async fn scan_handler(Json(req): Json<ScanRequest>) -> Response {
+async fn scan_handler(Json(req): Json<ScanRequest>) -> impl IntoResponse {
     info!(
         "scan request: exchanges={:?} min_profit={} collect_seconds={}",
         req.exchanges, req.min_profit, req.collect_seconds
@@ -38,17 +37,5 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Response {
         results.extend(opps);
     }
 
-    let body = match serde_json::to_string(&results) {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!("failed to serialize results: {:?}", e);
-            "[]".to_string()
-        }
-    };
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(Body::from(body))
-        .unwrap()
+    (StatusCode::OK, axum::Json(results))
 }
