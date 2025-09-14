@@ -1,196 +1,279 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Arbitrage Scanner</title>
-  <style>
-    body {
-      background-color: #121212;
-      color: #e0e0e0;
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 20px;
-    }
-    h1 {
-      text-align: center;
-      margin-bottom: 20px;
-    }
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-    .control {
-      display: flex;
-      flex-direction: column;
-      flex: 1;
-      min-width: 150px;
-    }
-    label {
-      margin-bottom: 5px;
-      font-size: 14px;
-      color: #bbb;
-    }
-    select, input, button {
-      padding: 8px;
-      border-radius: 4px;
-      border: none;
-      font-size: 14px;
-    }
-    select, input {
-      background-color: #1e1e1e;
-      color: #e0e0e0;
-    }
-    button {
-      background-color: #0288d1;
-      color: #fff;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #0277bd;
-    }
-    .loading {
-      margin: 10px 0;
-      font-style: italic;
-      color: #aaa;
-    }
-    .results {
-      display: none;
-      overflow: auto;
-      max-height: 500px;
-      border: 1px solid #333;
-    }
-    table {
-      border-collapse: collapse;
-      width: 100%;
-      min-width: 800px;
-    }
-    th, td {
-      border: 1px solid #333;
-      padding: 8px;
-      text-align: center;
-    }
-    th {
-      background-color: #0288d1;
-      color: #fff;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-    td:first-child, th:first-child {
-      position: sticky;
-      left: 0;
-      background-color: #1e1e1e;
-      z-index: 3;
-    }
-    /* Row striping */
-    tbody tr:nth-child(odd) {
-      background-color: #1e1e1e;
-    }
-    tbody tr:nth-child(even) {
-      background-color: #2a2a2a;
-    }
-    /* Hover highlight */
-    tbody tr:hover {
-      background-color: #333 !important;
-    }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Arbitrage Scanner</title>
+<style>
+  :root{
+    --bg:#0f1113;
+    --panel:#141619;
+    --muted:#bfcbd6;
+    --accent:#0288d1;
+    --accent-2:#4fc3f7;
+    --row-a:#151719;
+    --row-b:#1e2124;
+  }
+  html,body { height:100%; margin:0; background:var(--bg); color:#e6eef6; font-family:Inter, "Segoe UI", Roboto, Arial; }
+  .container { max-width:1200px; margin:18px auto; padding:18px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+  header h1 { margin:0; font-size:20px; color:var(--accent-2); background:rgba(255,255,255,0.02); padding:8px 12px; border-radius:8px; }
+  /* Controls layout */
+  .controls { display:flex; gap:12px; align-items:flex-end; margin-bottom:14px; flex-wrap:wrap; }
+  .control { display:flex; flex-direction:column; gap:6px; min-width:140px; }
+  label { font-size:13px; color:#9fc8dd; }
+  select,input { background:var(--panel); border:1px solid rgba(255,255,255,0.03); color:#fff; padding:8px 10px; border-radius:6px; font-size:14px; }
+  select[multiple] { min-height:120px; }
+  button#scanBtn { background:var(--accent); color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button#scanBtn:disabled { opacity:0.6; cursor:not-allowed; }
+  /* Responsive: column on narrow screens */
+  @media (max-width:880px) {
+    .controls { flex-direction:column; align-items:stretch; }
+    .control { width:100%; }
+  }
+
+  /* status & spinner */
+  #statusWrap { display:flex; align-items:center; gap:10px; min-height:28px; margin-bottom:12px; color:#9fc8dd; font-size:14px; }
+  .spinner { width:16px; height:16px; border-radius:50%; border:3px solid rgba(255,255,255,0.08); border-top-color:var(--accent-2); animation:spin 900ms linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* results box */
+  .resultsWrap { background:transparent; border-radius:8px; overflow:auto; transition:opacity .45s ease; display:block; }
+  .resultsHidden { display:none; }
+
+  table { border-collapse:collapse; width:100%; min-width:880px; }
+  thead th { position: sticky; top:0; background:var(--accent); color:#fff; padding:10px 8px; text-align:center; font-weight:700; z-index:3; }
+  th, td { border-bottom:1px solid rgba(255,255,255,0.03); padding:10px 8px; font-size:13px; }
+  tbody tr:nth-child(odd){ background:var(--row-a); }
+  tbody tr:nth-child(even){ background:var(--row-b); }
+  tbody tr:hover { background:#2c3338 !important; }
+
+  /* sticky first column (row number) */
+  th:first-child, td:first-child { position: sticky; left:0; background:#111317; z-index:4; width:60px; text-align:center; font-weight:600; }
+
+  /* small-screen tweaks for table */
+  @media (max-width:640px) {
+    thead th { font-size:12px; padding:8px 6px; }
+    td, th { padding:8px 6px; font-size:12px; }
+    th:first-child, td:first-child { width:48px; }
+  }
+
+  /* fade-in helper */
+  .fade-in { opacity:0; transform:translateY(6px); transition:opacity .45s ease, transform .45s ease; }
+  .fade-in.visible { opacity:1; transform:none; }
+</style>
 </head>
 <body>
-  <h1>Arbitrage Scanner</h1>
+  <div class="container">
+    <header>
+      <h1>Arbitrage Scanner</h1>
+      <div style="color:#9fc8dd;font-size:13px">Dark • Live scan on demand</div>
+    </header>
 
-  <div class="controls">
-    <div class="control">
-      <label for="exchange">Exchange</label>
-      <select id="exchange">
-        <option value="binance">Binance</option>
-        <option value="bybit">Bybit</option>
-        <option value="gateio">Gate.io</option>
-        <option value="kucoin">Kucoin</option>
-      </select>
+    <!-- Controls -->
+    <div class="controls" role="region" aria-label="Scanner controls">
+      <div class="control">
+        <label for="exchanges">Select exchange(s)</label>
+        <!-- multiple allowed; backend expects array of exchange strings -->
+        <select id="exchanges" multiple size="4" title="Select up to 5 exchanges (tap to select)">
+          <option value="binance">Binance</option>
+          <option value="bybit">Bybit</option>
+          <option value="kucoin">KuCoin</option>
+          <option value="gateio">Gate.io</option>
+        </select>
+        <small style="color:#7ea9c8;font-size:12px">Tap to select multiple (max 5)</small>
+      </div>
+
+      <div class="control">
+        <label for="min_profit">Minimum Profit %</label>
+        <input id="min_profit" type="number" step="0.1" value="0" />
+      </div>
+
+      <div class="control">
+        <label for="collect_seconds">Collect window (seconds)</label>
+        <input id="collect_seconds" type="number" min="1" value="5" />
+      </div>
+
+      <div class="control" style="align-self: center;">
+        <label>&nbsp;</label>
+        <button id="scanBtn">Scan</button>
+      </div>
     </div>
 
-    <div class="control">
-      <label for="minProfit">Minimum Profit %</label>
-      <input id="minProfit" type="number" step="0.1" value="0" />
+    <!-- status + progress -->
+    <div id="statusWrap" aria-live="polite">
+      <div id="statusText">Idle</div>
     </div>
 
-    <div class="control">
-      <label for="collectSeconds">Collect Window (seconds)</label>
-      <input id="collectSeconds" type="number" value="5" />
-    </div>
-
-    <div class="control">
-      <label>&nbsp;</label>
-      <button id="scanBtn">Scan</button>
+    <!-- results -->
+    <div id="resultsBox" class="resultsWrap resultsHidden fade-in" role="region" aria-label="Scan results">
+      <table id="resultsTable" aria-describedby="statusText">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Triangle</th>
+            <th>Pairs</th>
+            <th>Profit % before fee</th>
+            <th>Fees %</th>
+            <th>Profit % after fee</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
     </div>
   </div>
 
-  <div class="loading" id="loading" style="display:none;">Scanning exchange...</div>
-
-  <div class="results" id="results">
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Triangle</th>
-          <th>Pairs</th>
-          <th>Profit % Before Fee</th>
-          <th>Fees %</th>
-          <th>Profit % After Fee</th>
-        </tr>
-      </thead>
-      <tbody id="resultsBody"></tbody>
-    </table>
-  </div>
-
-  <script>
-    document.getElementById("scanBtn").addEventListener("click", async () => {
-      const exchange = document.getElementById("exchange").value;
-      const minProfit = parseFloat(document.getElementById("minProfit").value);
-      const collectSeconds = parseInt(document.getElementById("collectSeconds").value);
-
-      document.getElementById("loading").style.display = "block";
-      document.getElementById("results").style.display = "none";
-
-      try {
-        const res = await fetch("/scan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            exchanges: [exchange],
-            min_profit: minProfit,
-            collect_seconds: collectSeconds,
-          }),
-        });
-
-        if (!res.ok) throw new Error("Scan request failed");
-        const data = await res.json();
-
-        const body = document.getElementById("resultsBody");
-        body.innerHTML = "";
-
-        data.forEach((op, idx) => {
-          const row = document.createElement("tr");
-          row.innerHTML = `
-            <td>${idx + 1}</td>
-            <td>${op.triangle.join(" → ")}</td>
-            <td>${op.pairs.0.base}/${op.pairs.0.quote}, ${op.pairs.1.base}/${op.pairs.1.quote}, ${op.pairs.2.base}/${op.pairs.2.quote}</td>
-            <td>${op.profit_before.toFixed(2)}%</td>
-            <td>${op.fees.toFixed(2)}%</td>
-            <td>${op.profit_after.toFixed(2)}%</td>
-          `;
-          body.appendChild(row);
-        });
-
-        document.getElementById("results").style.display = "block";
-      } catch (e) {
-        alert("Error: " + e.message);
-      } finally {
-        document.getElementById("loading").style.display = "none";
+<script>
+  // Helper: show status (text + optional spinner)
+  function setStatus(text, {loading=false} = {}) {
+    const wrap = document.getElementById('statusWrap');
+    const textEl = document.getElementById('statusText');
+    textEl.textContent = text;
+    // spinner
+    if (loading) {
+      if (!document.getElementById('statusSpinner')) {
+        const s = document.createElement('div');
+        s.id = 'statusSpinner';
+        s.className = 'spinner';
+        wrap.insertBefore(s, textEl);
       }
+    } else {
+      const spinner = document.getElementById('statusSpinner');
+      if (spinner) spinner.remove();
+    }
+  }
+
+  // Limit multi-select to N items
+  const exchSelect = document.getElementById('exchanges');
+  exchSelect.addEventListener('change', () => {
+    const max = 5;
+    const selected = Array.from(exchSelect.selectedOptions);
+    if (selected.length > max) {
+      // deselect extra automatically (keeps earliest chosen)
+      selected.slice(max).forEach(o => o.selected = false);
+      setStatus(`Max ${max} exchanges allowed.`, {loading:false});
+      setTimeout(()=> setStatus('Idle', {loading:false}), 1800);
+    }
+  });
+
+  // Main scan function
+  document.getElementById('scanBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('scanBtn');
+    const selectedOptions = Array.from(exchSelect.selectedOptions);
+    const exchanges = selectedOptions.length ? selectedOptions.map(o => o.value) : [exchSelect.value];
+    const min_profit = parseFloat(document.getElementById('min_profit').value || 0);
+    const collect_seconds = parseInt(document.getElementById('collect_seconds').value || 5, 10);
+
+    if (!exchanges.length) {
+      setStatus('Please select at least one exchange.');
+      return;
+    }
+
+    // UI state
+    btn.disabled = true;
+    setStatus(`Scanning ${exchanges.join(', ')} — collecting pairs for ${collect_seconds}s ...`, {loading:true});
+    hideResults();
+
+    const payload = {
+      exchanges: exchanges,
+      min_profit: min_profit,
+      collect_seconds: collect_seconds
+    };
+
+    console.debug('SCAN payload:', payload);
+
+    try {
+      const resp = await fetch('/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error('Scan failed:', resp.status, text);
+        setStatus(`Scan failed: ${resp.status} ${resp.statusText}`);
+        btn.disabled = false;
+        return;
+      }
+
+      const results = await resp.json();
+      console.debug('Scan results:', results);
+
+      renderResults(results);
+      setStatus(`Scan complete — ${results.length} opportunities found.`, {loading:false});
+    } catch (err) {
+      console.error('Scan error', err);
+      setStatus('Network or server error while scanning. See console.');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function hideResults(){
+    const box = document.getElementById('resultsBox');
+    box.classList.remove('visible');
+    box.classList.add('resultsHidden');
+    // keep DOM but clear rows on show to avoid stale content
+  }
+
+  function renderResults(results){
+    const tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '';
+    if (!Array.isArray(results) || results.length === 0) {
+      hideResults();
+      return;
+    }
+
+    results.forEach((item, idx) => {
+      const tr = document.createElement('tr');
+
+      // triangle: expect [A,B,C] (serde serializes tuple as array)
+      const triangle = Array.isArray(item.triangle) ? item.triangle.join(' → ') : String(item.triangle);
+
+      // pairs: expect array of 3 pair objects {base,quote,price,is_spot}
+      let pairsText = '';
+      if (Array.isArray(item.pairs)) {
+        pairsText = item.pairs.map(p => `${p.base}/${p.quote}`).join(' | ');
+      } else {
+        // fallback if serialized as object with numeric keys - try common shapes
+        try {
+          pairsText = `${item.pairs[0].base}/${item.pairs[0].quote} | ${item.pairs[1].base}/${item.pairs[1].quote} | ${item.pairs[2].base}/${item.pairs[2].quote}`;
+        } catch (e) {
+          pairsText = JSON.stringify(item.pairs);
+        }
+      }
+
+      const profitBefore = Number(item.profit_before ?? item.profitBefore ?? 0);
+      const fees = Number(item.fees ?? 0);
+      const profitAfter = Number(item.profit_after ?? item.profitAfter ?? 0);
+
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(triangle)}</td>
+        <td>${escapeHtml(pairsText)}</td>
+        <td>${Number.isFinite(profitBefore) ? profitBefore.toFixed(4) + '%' : '-'}</td>
+        <td>${Number.isFinite(fees) ? fees.toFixed(4) + '%' : '-'}</td>
+        <td style="font-weight:700; color:${profitAfter>0? '#4caf50' : profitAfter<0? '#f44336' : '#bdbdbd'}">
+          ${Number.isFinite(profitAfter) ? profitAfter.toFixed(4) + '%' : '-'}
+        </td>
+      `;
+      tbody.appendChild(tr);
     });
-  </script>
+
+    // show & animate
+    const box = document.getElementById('resultsBox');
+    box.classList.remove('resultsHidden');
+    setTimeout(()=> box.classList.add('visible'), 20);
+  }
+
+  // small helper to avoid HTML injection
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // initialize default UI text
+  setStatus('Idle');
+</script>
 </body>
   </html>
