@@ -4,6 +4,7 @@ use tracing::{info, warn, error};
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// Collects a snapshot of market prices for a given exchange over a few seconds.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
@@ -20,10 +21,11 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
 
     info!("Connecting to {} at {}", exchange, url);
     let mut pairs: Vec<PairPrice> = Vec::new();
+    let mut skipped = 0;
 
     match connect_async(url).await {
         Ok((mut ws_stream, _)) => {
-            // Send subscriptions if needed
+            // For Bybit & Gateio & Kucoin, we must send a subscription
             if exchange == "bybit" {
                 let sub = serde_json::json!({
                     "op": "subscribe",
@@ -49,6 +51,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
             }
 
             let deadline = Instant::now() + Duration::from_secs(seconds);
+            let mut quotes_seen: HashSet<String> = HashSet::new();
 
             while let Some(msg) = ws_stream.next().await {
                 if Instant::now() >= deadline {
@@ -60,7 +63,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                         if let Ok(txt) = m.into_text() {
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 match exchange {
-                                    // Binance parser
                                     "binance" => {
                                         if let Value::Array(arr) = v {
                                             for it in arr {
@@ -69,17 +71,16 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                      it.get("c").and_then(|v| v.as_str())
                                                                 .and_then(|s| s.parse::<f64>().ok()))
                                                 {
-                                                    let (base, quote) = split_symbol(sym);
-                                                    if price > 0.0 && !base.is_empty() {
+                                                    let (base, quote) = dynamic_split_symbol(sym, &mut quotes_seen);
+                                                    if price > 0.0 && !base.is_empty() && !quote.is_empty() {
                                                         pairs.push(PairPrice { base, quote, price, is_spot: true });
                                                     } else {
-                                                        warn!("{} skipped symbol: {}", exchange, sym);
+                                                        skipped += 1;
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    // Bybit parser
                                     "bybit" => {
                                         if v.get("topic").and_then(|t| t.as_str()) == Some("tickers") {
                                             if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
@@ -89,18 +90,17 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                          it.get("lastPrice").and_then(|p| p.as_str())
                                                                             .and_then(|s| s.parse::<f64>().ok()))
                                                     {
-                                                        let (base, quote) = split_symbol(sym);
-                                                        if price > 0.0 && !base.is_empty() {
+                                                        let (base, quote) = dynamic_split_symbol(sym, &mut quotes_seen);
+                                                        if price > 0.0 && !base.is_empty() && !quote.is_empty() {
                                                             pairs.push(PairPrice { base, quote, price, is_spot: true });
                                                         } else {
-                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                            skipped += 1;
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    // Gateio parser
                                     "gateio" => {
                                         if v.get("channel").and_then(|c| c.as_str()) == Some("spot.tickers") {
                                             if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
@@ -118,14 +118,13 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                                 is_spot: true
                                                             });
                                                         } else {
-                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                            skipped += 1;
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    // Kucoin parser
                                     "kucoin" => {
                                         if let Some(data) = v.get("data") {
                                             if let (Some(sym), Some(price_str)) =
@@ -137,7 +136,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                         if let Some((base, quote)) = parse_symbol(sym) {
                                                             pairs.push(PairPrice { base, quote, price, is_spot: true });
                                                         } else {
-                                                            warn!("{} skipped symbol: {}", exchange, sym);
+                                                            skipped += 1;
                                                         }
                                                     }
                                                 }
@@ -162,20 +161,26 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
         }
     }
 
-    info!("{} collected {} pairs", exchange, pairs.len());
+    info!("{} collected {} pairs, skipped {}", exchange, pairs.len(), skipped);
     pairs
 }
 
-/// Very simple symbol splitter for Binance-style symbols (e.g., BTCUSDT).
-fn split_symbol(sym: &str) -> (String, String) {
-    let suffixes = ["USDT", "BUSD", "USDC", "BTC", "ETH"];
+/// Dynamically split symbols by longest suffix match from collected quotes
+fn dynamic_split_symbol(sym: &str, quotes_seen: &mut HashSet<String>) -> (String, String) {
     let s = sym.to_uppercase();
-    for suf in &suffixes {
-        if s.ends_with(suf) && s.len() > suf.len() {
-            let base = s[..s.len() - suf.len()].to_string();
-            return (base, suf.to_string());
+
+    // Example: if symbol = BTCUSDT, then add "USDT" into known quotes
+    // Heuristic: take last 3-5 chars as candidate quote
+    for len in (3..=5).rev() {
+        if s.len() > len {
+            let (base, quote) = s.split_at(s.len() - len);
+            quotes_seen.insert(quote.to_string());
+            if !base.is_empty() {
+                return (base.to_string(), quote.to_string());
+            }
         }
     }
+
     (String::new(), String::new())
 }
 
@@ -187,4 +192,4 @@ fn parse_symbol(sym: &str) -> Option<(String,String)> {
     } else {
         None
     }
-                                                    }
+                    }
