@@ -1,9 +1,8 @@
 use axum::{
     routing::post,
-    Router,
-    extract::Json,
-    response::IntoResponse,
+    Json, Router,
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde::Deserialize;
 use tracing::info;
@@ -33,9 +32,14 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> impl IntoResponse {
 
     for exch in req.exchanges {
         let pairs: Vec<PairPrice> = collect_exchange_snapshot(&exch, req.collect_seconds).await;
+        info!("{} collected {} pairs", exch, pairs.len());
+
         let opps = find_triangular_opportunities(&exch, pairs, req.min_profit);
+        info!("{} opportunities found: {}", exch, opps.len());
+
         results.extend(opps);
     }
 
-    (StatusCode::OK, axum::Json(results))
+    // Always return JSON, even if empty
+    (StatusCode::OK, Json(results))
 }
