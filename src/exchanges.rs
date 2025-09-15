@@ -1,5 +1,5 @@
 use crate::models::PairPrice;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, SinkExt}:
 use serde_json::Value;
 use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
