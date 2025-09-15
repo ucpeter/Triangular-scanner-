@@ -3,8 +3,7 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::exchanges::collect_exchange_snapshot;
-use crate::logic::find_triangular_opportunities;
-use crate::logic::TriangularResult;
+use crate::logic::{find_triangular_opportunities, TriangularResult};
 use crate::models::PairPrice;
 
 pub fn routes() -> Router {
@@ -31,12 +30,15 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
         info!("{}: collected {} pairs", exch, pairs.len());
 
         let opps = find_triangular_opportunities(&exch, pairs, req.min_profit);
-        info!("{}: found {} opportunities", exch, opps.len());
-
+        let count = opps.len();
         results.extend(opps);
+
+        // ✅ log per-exchange opportunities
+        info!("{}: found {} opportunities", exch, count);
     }
 
-    info!("scan complete with {} total opportunities", results.len());
+    // ✅ log final completion
+    info!("scan complete: {} total opportunities", results.len());
 
     Json(results)
-    }
+}
