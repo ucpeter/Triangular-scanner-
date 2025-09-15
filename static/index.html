@@ -1,212 +1,279 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Triangular Arbitrage Scanner</title>
-  <style>
-    body {
-      background-color: #121212;
-      color: #e0e0e0;
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 20px;
-    }
-    h1 {
-      text-align: center;
-      color: #4fc3f7;
-    }
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-    .controls label {
-      font-size: 14px;
-      margin-right: 5px;
-    }
-    .controls input, .controls select, .controls button {
-      padding: 6px;
-      border-radius: 4px;
-      border: none;
-      font-size: 14px;
-    }
-    .controls button {
-      background-color: #4fc3f7;
-      color: #121212;
-      cursor: pointer;
-    }
-    .controls button:hover {
-      background-color: #0288d1;
-    }
-    #status {
-      margin: 10px 0;
-      font-style: italic;
-      color: #81d4fa;
-    }
-    .table-container {
-      overflow-x: auto;
-      overflow-y: auto;
-      max-height: 500px;
-      border: 1px solid #333;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 950px;
-    }
-    th, td {
-      border: 1px solid #333;
-      padding: 8px;
-      text-align: center;
-    }
-    th {
-      background-color: #01579b;
-      color: #fff;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-    td:first-child, th:first-child {
-      position: sticky;
-      left: 0;
-      background-color: #263238;
-      z-index: 1;
-    }
-    tr:nth-child(even) {
-      background-color: #1e1e1e;
-    }
-    tr:nth-child(odd) {
-      background-color: #2c2c2c;
-    }
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Arbitrage Scanner</title>
+<style>
+  :root{
+    --bg:#0f1113;
+    --panel:#141619;
+    --muted:#bfcbd6;
+    --accent:#0288d1;
+    --accent-2:#4fc3f7;
+    --row-a:#151719;
+    --row-b:#1e2124;
+  }
+  html,body { height:100%; margin:0; background:var(--bg); color:#e6eef6; font-family:Inter, "Segoe UI", Roboto, Arial; }
+  .container { max-width:1200px; margin:18px auto; padding:18px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+  header h1 { margin:0; font-size:20px; color:var(--accent-2); background:rgba(255,255,255,0.02); padding:8px 12px; border-radius:8px; }
+  /* Controls layout */
+  .controls { display:flex; gap:12px; align-items:flex-end; margin-bottom:14px; flex-wrap:wrap; }
+  .control { display:flex; flex-direction:column; gap:6px; min-width:140px; }
+  label { font-size:13px; color:#9fc8dd; }
+  select,input { background:var(--panel); border:1px solid rgba(255,255,255,0.03); color:#fff; padding:8px 10px; border-radius:6px; font-size:14px; }
+  select[multiple] { min-height:120px; }
+  button#scanBtn { background:var(--accent); color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button#scanBtn:disabled { opacity:0.6; cursor:not-allowed; }
+  /* Responsive: column on narrow screens */
+  @media (max-width:880px) {
+    .controls { flex-direction:column; align-items:stretch; }
+    .control { width:100%; }
+  }
 
-    /* Gradient for profits */
-    .profit-positive {
-      background: linear-gradient(90deg, #1b5e20, #2e7d32);
-      color: #fff;
-      font-weight: bold;
-    }
-    .profit-negative {
-      background: linear-gradient(90deg, #b71c1c, #c62828);
-      color: #fff;
-      font-weight: bold;
-    }
+  /* status & spinner */
+  #statusWrap { display:flex; align-items:center; gap:10px; min-height:28px; margin-bottom:12px; color:#9fc8dd; font-size:14px; }
+  .spinner { width:16px; height:16px; border-radius:50%; border:3px solid rgba(255,255,255,0.08); border-top-color:var(--accent-2); animation:spin 900ms linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 
-    /* Gradient for triangles and pairs */
-    .triangle-cell {
-      background: linear-gradient(90deg, #0d47a1, #1976d2);
-      color: #fff;
-      font-weight: bold;
-    }
-    .pair-cell {
-      background: linear-gradient(90deg, #263238, #37474f);
-      color: #bbdefb;
-      font-weight: bold;
-    }
-  </style>
+  /* results box */
+  .resultsWrap { background:transparent; border-radius:8px; overflow:auto; transition:opacity .45s ease; display:block; }
+  .resultsHidden { display:none; }
+
+  table { border-collapse:collapse; width:100%; min-width:880px; }
+  thead th { position: sticky; top:0; background:var(--accent); color:#fff; padding:10px 8px; text-align:center; font-weight:700; z-index:3; }
+  th, td { border-bottom:1px solid rgba(255,255,255,0.03); padding:10px 8px; font-size:13px; }
+  tbody tr:nth-child(odd){ background:var(--row-a); }
+  tbody tr:nth-child(even){ background:var(--row-b); }
+  tbody tr:hover { background:#2c3338 !important; }
+
+  /* sticky first column (row number) */
+  th:first-child, td:first-child { position: sticky; left:0; background:#111317; z-index:4; width:60px; text-align:center; font-weight:600; }
+
+  /* small-screen tweaks for table */
+  @media (max-width:640px) {
+    thead th { font-size:12px; padding:8px 6px; }
+    td, th { padding:8px 6px; font-size:12px; }
+    th:first-child, td:first-child { width:48px; }
+  }
+
+  /* fade-in helper */
+  .fade-in { opacity:0; transform:translateY(6px); transition:opacity .45s ease, transform .45s ease; }
+  .fade-in.visible { opacity:1; transform:none; }
+</style>
 </head>
 <body>
-  <h1>Triangular Arbitrage Scanner</h1>
+  <div class="container">
+    <header>
+      <h1>Arbitrage Scanner</h1>
+      <div style="color:#9fc8dd;font-size:13px">Dark • Live scan on demand</div>
+    </header>
 
-  <div class="controls">
-    <div>
-      <label for="exchangeSelect">Select Exchange:</label>
-      <select id="exchangeSelect">
-        <option value="binance">Binance</option>
-        <option value="bybit">Bybit</option>
-        <option value="gateio">Gate.io</option>
-        <option value="kucoin">Kucoin</option>
-      </select>
+    <!-- Controls -->
+    <div class="controls" role="region" aria-label="Scanner controls">
+      <div class="control">
+        <label for="exchanges">Select exchange(s)</label>
+        <!-- multiple allowed; backend expects array of exchange strings -->
+        <select id="exchanges" multiple size="4" title="Select up to 5 exchanges (tap to select)">
+          <option value="binance">Binance</option>
+          <option value="bybit">Bybit</option>
+          <option value="kucoin">KuCoin</option>
+          <option value="gateio">Gate.io</option>
+        </select>
+        <small style="color:#7ea9c8;font-size:12px">Tap to select multiple (max 5)</small>
+      </div>
+
+      <div class="control">
+        <label for="min_profit">Minimum Profit %</label>
+        <input id="min_profit" type="number" step="0.1" value="0" />
+      </div>
+
+      <div class="control">
+        <label for="collect_seconds">Collect window (seconds)</label>
+        <input id="collect_seconds" type="number" min="1" value="5" />
+      </div>
+
+      <div class="control" style="align-self: center;">
+        <label>&nbsp;</label>
+        <button id="scanBtn">Scan</button>
+      </div>
     </div>
-    <div>
-      <label for="minProfit">Min Profit %:</label>
-      <input id="minProfit" type="number" step="0.01" value="0">
+
+    <!-- status + progress -->
+    <div id="statusWrap" aria-live="polite">
+      <div id="statusText">Idle</div>
     </div>
-    <div>
-      <label for="collectSeconds">Collect Window (sec):</label>
-      <input id="collectSeconds" type="number" step="1" value="5">
-    </div>
-    <div>
-      <button onclick="runScan()">Scan</button>
+
+    <!-- results -->
+    <div id="resultsBox" class="resultsWrap resultsHidden fade-in" role="region" aria-label="Scan results">
+      <table id="resultsTable" aria-describedby="statusText">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Triangle</th>
+            <th>Pairs</th>
+            <th>Profit % before fee</th>
+            <th>Fees %</th>
+            <th>Profit % after fee</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
     </div>
   </div>
 
-  <div id="status">Idle.</div>
-
-  <div class="table-container">
-    <table id="resultsTable">
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Triangle</th>
-          <th>Pair 1</th>
-          <th>Pair 2</th>
-          <th>Pair 3</th>
-          <th>Profit % Before Fee</th>
-          <th>Fees %</th>
-          <th>Profit % After Fee</th>
-        </tr>
-      </thead>
-      <tbody id="resultsBody"></tbody>
-    </table>
-  </div>
-
-  <script>
-    async function runScan() {
-      const exchange = document.getElementById("exchangeSelect").value;
-      const minProfit = parseFloat(document.getElementById("minProfit").value) || 0;
-      const collectSeconds = parseInt(document.getElementById("collectSeconds").value) || 5;
-
-      const statusEl = document.getElementById("status");
-      const tableBody = document.getElementById("resultsBody");
-
-      // Reset UI
-      statusEl.textContent = `🔄 Scanning ${exchange}...`;
-      tableBody.innerHTML = "";
-
-      try {
-        const resp = await fetch("/scan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            exchanges: [exchange],
-            min_profit: minProfit,
-            collect_seconds: collectSeconds
-          })
-        });
-
-        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
-        const results = await resp.json();
-
-        if (results.length === 0) {
-          statusEl.textContent = "✅ Scan complete: No opportunities found.";
-        } else {
-          statusEl.textContent = `✅ Scan complete: Found ${results.length} opportunities.`;
-          for (let i = 0; i < results.length; i++) {
-            const r = results[i];
-            const row = document.createElement("tr");
-
-            // Profit coloring
-            const profitClass = r.profit_after >= 0 ? "profit-positive" : "profit-negative";
-
-            row.innerHTML = `
-              <td>${i+1}</td>
-              <td class="triangle-cell">${r.triangle.join(" → ")}</td>
-              <td class="pair-cell">${r.pairs[0].base}/${r.pairs[0].quote}</td>
-              <td class="pair-cell">${r.pairs[1].base}/${r.pairs[1].quote}</td>
-              <td class="pair-cell">${r.pairs[2].base}/${r.pairs[2].quote}</td>
-              <td class="${profitClass}">${r.profit_before.toFixed(2)}%</td>
-              <td>${r.fees.toFixed(2)}%</td>
-              <td class="${profitClass}">${r.profit_after.toFixed(2)}%</td>
-            `;
-            tableBody.appendChild(row);
-          }
-        }
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = "❌ Scan failed. Check server logs.";
+<script>
+  // Helper: show status (text + optional spinner)
+  function setStatus(text, {loading=false} = {}) {
+    const wrap = document.getElementById('statusWrap');
+    const textEl = document.getElementById('statusText');
+    textEl.textContent = text;
+    // spinner
+    if (loading) {
+      if (!document.getElementById('statusSpinner')) {
+        const s = document.createElement('div');
+        s.id = 'statusSpinner';
+        s.className = 'spinner';
+        wrap.insertBefore(s, textEl);
       }
+    } else {
+      const spinner = document.getElementById('statusSpinner');
+      if (spinner) spinner.remove();
     }
-  </script>
+  }
+
+  // Limit multi-select to N items
+  const exchSelect = document.getElementById('exchanges');
+  exchSelect.addEventListener('change', () => {
+    const max = 5;
+    const selected = Array.from(exchSelect.selectedOptions);
+    if (selected.length > max) {
+      // deselect extra automatically (keeps earliest chosen)
+      selected.slice(max).forEach(o => o.selected = false);
+      setStatus(`Max ${max} exchanges allowed.`, {loading:false});
+      setTimeout(()=> setStatus('Idle', {loading:false}), 1800);
+    }
+  });
+
+  // Main scan function
+  document.getElementById('scanBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('scanBtn');
+    const selectedOptions = Array.from(exchSelect.selectedOptions);
+    const exchanges = selectedOptions.length ? selectedOptions.map(o => o.value) : [exchSelect.value];
+    const min_profit = parseFloat(document.getElementById('min_profit').value || 0);
+    const collect_seconds = parseInt(document.getElementById('collect_seconds').value || 5, 10);
+
+    if (!exchanges.length) {
+      setStatus('Please select at least one exchange.');
+      return;
+    }
+
+    // UI state
+    btn.disabled = true;
+    setStatus(`Scanning ${exchanges.join(', ')} — collecting pairs for ${collect_seconds}s ...`, {loading:true});
+    hideResults();
+
+    const payload = {
+      exchanges: exchanges,
+      min_profit: min_profit,
+      collect_seconds: collect_seconds
+    };
+
+    console.debug('SCAN payload:', payload);
+
+    try {
+      const resp = await fetch('/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error('Scan failed:', resp.status, text);
+        setStatus(`Scan failed: ${resp.status} ${resp.statusText}`);
+        btn.disabled = false;
+        return;
+      }
+
+      const results = await resp.json();
+      console.debug('Scan results:', results);
+
+      renderResults(results);
+      setStatus(`Scan complete — ${results.length} opportunities found.`, {loading:false});
+    } catch (err) {
+      console.error('Scan error', err);
+      setStatus('Network or server error while scanning. See console.');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function hideResults(){
+    const box = document.getElementById('resultsBox');
+    box.classList.remove('visible');
+    box.classList.add('resultsHidden');
+    // keep DOM but clear rows on show to avoid stale content
+  }
+
+  function renderResults(results){
+    const tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '';
+    if (!Array.isArray(results) || results.length === 0) {
+      hideResults();
+      return;
+    }
+
+    results.forEach((item, idx) => {
+      const tr = document.createElement('tr');
+
+      // triangle: expect [A,B,C] (serde serializes tuple as array)
+      const triangle = Array.isArray(item.triangle) ? item.triangle.join(' → ') : String(item.triangle);
+
+      // pairs: expect array of 3 pair objects {base,quote,price,is_spot}
+      let pairsText = '';
+      if (Array.isArray(item.pairs)) {
+        pairsText = item.pairs.map(p => `${p.base}/${p.quote}`).join(' | ');
+      } else {
+        // fallback if serialized as object with numeric keys - try common shapes
+        try {
+          pairsText = `${item.pairs[0].base}/${item.pairs[0].quote} | ${item.pairs[1].base}/${item.pairs[1].quote} | ${item.pairs[2].base}/${item.pairs[2].quote}`;
+        } catch (e) {
+          pairsText = JSON.stringify(item.pairs);
+        }
+      }
+
+      const profitBefore = Number(item.profit_before ?? item.profitBefore ?? 0);
+      const fees = Number(item.fees ?? 0);
+      const profitAfter = Number(item.profit_after ?? item.profitAfter ?? 0);
+
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(triangle)}</td>
+        <td>${escapeHtml(pairsText)}</td>
+        <td>${Number.isFinite(profitBefore) ? profitBefore.toFixed(4) + '%' : '-'}</td>
+        <td>${Number.isFinite(fees) ? fees.toFixed(4) + '%' : '-'}</td>
+        <td style="font-weight:700; color:${profitAfter>0? '#4caf50' : profitAfter<0? '#f44336' : '#bdbdbd'}">
+          ${Number.isFinite(profitAfter) ? profitAfter.toFixed(4) + '%' : '-'}
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // show & animate
+    const box = document.getElementById('resultsBox');
+    box.classList.remove('resultsHidden');
+    setTimeout(()=> box.classList.add('visible'), 20);
+  }
+
+  // small helper to avoid HTML injection
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // initialize default UI text
+  setStatus('Idle');
+</script>
 </body>
-</html>
+  </html>
