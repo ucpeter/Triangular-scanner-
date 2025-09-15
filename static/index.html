@@ -1,117 +1,29 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Triangular Arbitrage Scanner</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arbitrage Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body {
-      background-color: #121212;
-      color: #e0e0e0;
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 20px;
-    }
-    h1 {
-      text-align: center;
-      color: #4fc3f7;
-    }
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-    .controls label {
-      font-size: 14px;
-      margin-right: 5px;
-    }
-    .controls input, .controls select, .controls button {
-      padding: 6px;
-      border-radius: 4px;
-      border: none;
-      font-size: 14px;
-    }
-    .controls button {
-      background-color: #4fc3f7;
-      color: #121212;
-      cursor: pointer;
-    }
-    .controls button:hover {
-      background-color: #0288d1;
-    }
-    #status {
-      margin: 10px 0;
-      font-style: italic;
-      color: #81d4fa;
-    }
-    .table-container {
-      overflow-x: auto;
-      overflow-y: auto;
-      max-height: 500px;
-      border: 1px solid #333;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 950px;
-    }
-    th, td {
-      border: 1px solid #333;
-      padding: 8px;
-      text-align: center;
-    }
-    th {
-      background-color: #01579b;
-      color: #fff;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-    td:first-child, th:first-child {
-      position: sticky;
-      left: 0;
-      background-color: #263238;
-      z-index: 1;
-    }
-    tr:nth-child(even) {
-      background-color: #1e1e1e;
-    }
-    tr:nth-child(odd) {
-      background-color: #2c2c2c;
-    }
-
-    /* Gradient for profits */
-    .profit-positive {
-      background: linear-gradient(90deg, #1b5e20, #2e7d32);
-      color: #fff;
-      font-weight: bold;
-    }
-    .profit-negative {
-      background: linear-gradient(90deg, #b71c1c, #c62828);
-      color: #fff;
-      font-weight: bold;
-    }
-
-    /* Gradient for triangles and pairs */
-    .triangle-cell {
-      background: linear-gradient(90deg, #0d47a1, #1976d2);
-      color: #fff;
-      font-weight: bold;
-    }
-    .pair-cell {
-      background: linear-gradient(90deg, #263238, #37474f);
-      color: #bbdefb;
-      font-weight: bold;
-    }
+    body { background-color: #1e1e1e; color: #f0f0f0; }
+    th { background-color: #1e40af; } /* Blue header */
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid #333; padding: 6px; }
+    tbody tr:nth-child(odd) { background-color: #2a2a2a; }
+    tbody tr:nth-child(even) { background-color: #1f2937; }
+    tbody tr:hover { background-color: #374151; }
+    .number-col { position: sticky; left: 0; background: #111827; z-index: 1; }
   </style>
 </head>
-<body>
-  <h1>Triangular Arbitrage Scanner</h1>
+<body class="p-4">
+  <h1 class="text-2xl font-bold mb-4">Arbitrage Scanner</h1>
 
-  <div class="controls">
+  <!-- Scan Controls -->
+  <div class="flex flex-col md:flex-row gap-4 mb-6">
     <div>
-      <label for="exchangeSelect">Select Exchange:</label>
-      <select id="exchangeSelect">
+      <label class="block text-sm">Select Exchange</label>
+      <select id="exchange" class="bg-gray-800 p-2 rounded w-full md:w-40">
         <option value="binance">Binance</option>
         <option value="bybit">Bybit</option>
         <option value="gateio">Gate.io</option>
@@ -119,32 +31,37 @@
       </select>
     </div>
     <div>
-      <label for="minProfit">Min Profit %:</label>
-      <input id="minProfit" type="number" step="0.01" value="0">
+      <label class="block text-sm">Minimum Profit %</label>
+      <input id="minProfit" type="number" value="0" step="0.1"
+        class="bg-gray-800 p-2 rounded w-full md:w-40"/>
     </div>
     <div>
-      <label for="collectSeconds">Collect Window (sec):</label>
-      <input id="collectSeconds" type="number" step="1" value="5">
+      <label class="block text-sm">Collect Window (seconds)</label>
+      <input id="collectSeconds" type="number" value="5" min="1"
+        class="bg-gray-800 p-2 rounded w-full md:w-40"/>
     </div>
-    <div>
-      <button onclick="runScan()">Scan</button>
+    <div class="flex items-end">
+      <button id="scanBtn"
+        class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-white">
+        Scan
+      </button>
     </div>
   </div>
 
-  <div id="status">Idle.</div>
+  <!-- Scan status -->
+  <div id="status" class="mb-4 text-sm text-gray-300"></div>
 
-  <div class="table-container">
-    <table id="resultsTable">
+  <!-- Results Table -->
+  <div id="resultsContainer" class="hidden overflow-auto max-h-[500px]">
+    <table class="min-w-full text-sm">
       <thead>
         <tr>
-          <th>#</th>
+          <th class="number-col">#</th>
           <th>Triangle</th>
-          <th>Pair 1</th>
-          <th>Pair 2</th>
-          <th>Pair 3</th>
-          <th>Profit % Before Fee</th>
+          <th>Pairs</th>
+          <th>Profit % (Before Fee)</th>
           <th>Fees %</th>
-          <th>Profit % After Fee</th>
+          <th>Profit % (After Fee)</th>
         </tr>
       </thead>
       <tbody id="resultsBody"></tbody>
@@ -152,61 +69,58 @@
   </div>
 
   <script>
-    async function runScan() {
-      const exchange = document.getElementById("exchangeSelect").value;
-      const minProfit = parseFloat(document.getElementById("minProfit").value) || 0;
-      const collectSeconds = parseInt(document.getElementById("collectSeconds").value) || 5;
+    const scanBtn = document.getElementById("scanBtn");
+    const statusEl = document.getElementById("status");
+    const resultsContainer = document.getElementById("resultsContainer");
+    const resultsBody = document.getElementById("resultsBody");
 
-      const statusEl = document.getElementById("status");
-      const tableBody = document.getElementById("resultsBody");
+    scanBtn.addEventListener("click", async () => {
+      const exchange = document.getElementById("exchange").value;
+      const minProfit = parseFloat(document.getElementById("minProfit").value);
+      const collectSeconds = parseInt(document.getElementById("collectSeconds").value);
 
-      // Reset UI
-      statusEl.textContent = `🔄 Scanning ${exchange}...`;
-      tableBody.innerHTML = "";
+      statusEl.textContent = `Scanning ${exchange}...`;
+      resultsContainer.classList.add("hidden");
+      resultsBody.innerHTML = "";
 
       try {
-        const resp = await fetch("/scan", {
+        const res = await fetch("/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            exchanges: [exchange],
-            min_profit: minProfit,
-            collect_seconds: collectSeconds
-          })
+          body: JSON.stringify({ exchanges: [exchange], min_profit: minProfit, collect_seconds: collectSeconds })
         });
 
-        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
-        const results = await resp.json();
+        if (!res.ok) {
+          statusEl.textContent = `Scan failed: ${res.status}`;
+          return;
+        }
 
-        if (results.length === 0) {
-          statusEl.textContent = "✅ Scan complete: No opportunities found.";
-        } else {
-          statusEl.textContent = `✅ Scan complete: Found ${results.length} opportunities.`;
-          for (let i = 0; i < results.length; i++) {
-            const r = results[i];
+        const data = await res.json();
+        statusEl.textContent = `Scan complete. Found ${data.length} opportunities.`;
+
+        if (data.length > 0) {
+          resultsContainer.classList.remove("hidden");
+          data.forEach((opp, idx) => {
             const row = document.createElement("tr");
-
-            // Profit coloring
-            const profitClass = r.profit_after >= 0 ? "profit-positive" : "profit-negative";
-
             row.innerHTML = `
-              <td>${i+1}</td>
-              <td class="triangle-cell">${r.triangle.join(" → ")}</td>
-              <td class="pair-cell">${r.pairs[0].base}/${r.pairs[0].quote}</td>
-              <td class="pair-cell">${r.pairs[1].base}/${r.pairs[1].quote}</td>
-              <td class="pair-cell">${r.pairs[2].base}/${r.pairs[2].quote}</td>
-              <td class="${profitClass}">${r.profit_before.toFixed(2)}%</td>
-              <td>${r.fees.toFixed(2)}%</td>
-              <td class="${profitClass}">${r.profit_after.toFixed(2)}%</td>
+              <td class="number-col">${idx + 1}</td>
+              <td>${opp.triangle.join(" → ")}</td>
+              <td>
+                ${opp.pairs[0].base}/${opp.pairs[0].quote}, 
+                ${opp.pairs[1].base}/${opp.pairs[1].quote}, 
+                ${opp.pairs[2].base}/${opp.pairs[2].quote}
+              </td>
+              <td>${opp.profit_before.toFixed(2)}%</td>
+              <td>${opp.fees.toFixed(2)}%</td>
+              <td>${opp.profit_after.toFixed(2)}%</td>
             `;
-            tableBody.appendChild(row);
-          }
+            resultsBody.appendChild(row);
+          });
         }
       } catch (err) {
-        console.error(err);
-        statusEl.textContent = "❌ Scan failed. Check server logs.";
+        statusEl.textContent = "Scan error: " + err;
       }
-    }
+    });
   </script>
 </body>
 </html>
