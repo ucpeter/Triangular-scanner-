@@ -7,13 +7,14 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { background-color: #1e1e1e; color: #f0f0f0; }
-    th { background-color: #1e40af; } /* Blue header */
+    th { background-color: #1e40af; cursor: pointer; }
     table { border-collapse: collapse; }
     td, th { border: 1px solid #333; padding: 6px; }
     tbody tr:nth-child(odd) { background-color: #2a2a2a; }
     tbody tr:nth-child(even) { background-color: #1f2937; }
     tbody tr:hover { background-color: #374151; }
     .number-col { position: sticky; left: 0; background: #111827; z-index: 1; }
+    .sort-indicator { margin-left: 4px; }
   </style>
 </head>
 <body class="p-4">
@@ -59,9 +60,18 @@
           <th class="number-col">#</th>
           <th>Triangle</th>
           <th>Pairs</th>
-          <th>Profit % (Before Fee)</th>
-          <th>Fees %</th>
-          <th>Profit % (After Fee)</th>
+          <th data-sort="profit_before">
+            Profit % (Before Fee) <span class="sort-indicator"></span>
+          </th>
+          <th data-sort="fees">
+            Fees % <span class="sort-indicator"></span>
+          </th>
+          <th data-sort="profit_after">
+            Profit % (After Fee) <span class="sort-indicator"></span>
+          </th>
+          <th data-sort="score_liquidity">
+            Liquidity <span class="sort-indicator"></span>
+          </th>
         </tr>
       </thead>
       <tbody id="resultsBody"></tbody>
@@ -74,6 +84,75 @@
     const resultsContainer = document.getElementById("resultsContainer");
     const resultsBody = document.getElementById("resultsBody");
 
+    let currentData = [];
+    let sortConfig = { key: "profit_after", asc: false }; // default sort
+
+    // Format liquidity nicely
+    function formatLiquidity(val) {
+      if (val >= 1_000_000_000) return (val / 1_000_000_000).toFixed(2) + "B";
+      if (val >= 1_000_000) return (val / 1_000_000).toFixed(2) + "M";
+      if (val >= 1_000) return (val / 1_000).toFixed(2) + "K";
+      return val.toFixed(2);
+    }
+
+    function renderTable(data) {
+      resultsBody.innerHTML = "";
+      data.forEach((opp, idx) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td class="number-col">${idx + 1}</td>
+          <td>${opp.triangle}</td>
+          <td>${opp.pairs.join(", ")}</td>
+          <td>${opp.profit_before.toFixed(2)}%</td>
+          <td>${opp.fees.toFixed(2)}%</td>
+          <td>${opp.profit_after.toFixed(2)}%</td>
+          <td>${formatLiquidity(opp.score_liquidity)}</td>
+        `;
+        resultsBody.appendChild(row);
+      });
+    }
+
+    function updateSortIndicators() {
+      document.querySelectorAll("th[data-sort]").forEach(th => {
+        const key = th.getAttribute("data-sort");
+        const span = th.querySelector(".sort-indicator");
+        if (!span) return;
+        if (sortConfig.key === key) {
+          span.textContent = sortConfig.asc ? "▲" : "▼";
+        } else {
+          span.textContent = "";
+        }
+      });
+    }
+
+    function sortAndRender() {
+      const sorted = [...currentData].sort((a, b) => {
+        const valA = a[sortConfig.key];
+        const valB = b[sortConfig.key];
+        if (typeof valA === "number" && typeof valB === "number") {
+          return sortConfig.asc ? valA - valB : valB - valA;
+        }
+        return 0;
+      });
+      renderTable(sorted);
+      updateSortIndicators();
+    }
+
+    // Attach click handlers for sorting
+    document.querySelectorAll("th[data-sort]").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.getAttribute("data-sort");
+        if (sortConfig.key === key) {
+          sortConfig.asc = !sortConfig.asc;
+        } else {
+          sortConfig.key = key;
+          sortConfig.asc = true;
+        }
+        sortAndRender();
+      });
+    });
+
+    // Handle Scan button click
     scanBtn.addEventListener("click", async () => {
       const exchange = document.getElementById("exchange").value;
       const minProfit = parseFloat(document.getElementById("minProfit").value);
@@ -100,22 +179,8 @@
 
         if (data.length > 0) {
           resultsContainer.classList.remove("hidden");
-          data.forEach((opp, idx) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `
-              <td class="number-col">${idx + 1}</td>
-              <td>${opp.triangle.join(" → ")}</td>
-              <td>
-                ${opp.pairs[0].base}/${opp.pairs[0].quote}, 
-                ${opp.pairs[1].base}/${opp.pairs[1].quote}, 
-                ${opp.pairs[2].base}/${opp.pairs[2].quote}
-              </td>
-              <td>${opp.profit_before.toFixed(2)}%</td>
-              <td>${opp.fees.toFixed(2)}%</td>
-              <td>${opp.profit_after.toFixed(2)}%</td>
-            `;
-            resultsBody.appendChild(row);
-          });
+          currentData = data;
+          sortAndRender();
         }
       } catch (err) {
         statusEl.textContent = "Scan error: " + err;
