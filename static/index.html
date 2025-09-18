@@ -9,12 +9,16 @@
     body { background-color: #1e1e1e; color: #f0f0f0; }
     th { background-color: #1e40af; cursor: pointer; }
     table { border-collapse: collapse; }
-    td, th { border: 1px solid #333; padding: 6px; }
+    td, th { border: 1px solid #333; padding: 10px; }
     tbody tr:nth-child(odd) { background-color: #2a2a2a; }
     tbody tr:nth-child(even) { background-color: #1f2937; }
     tbody tr:hover { background-color: #374151; }
-    .number-col { position: sticky; left: 0; background: #111827; z-index: 1; }
+    .number-col { position: sticky; left: 0; background: #111827; z-index: 2; }
+    thead th { position: sticky; top: 0; z-index: 3; }
     .sort-indicator { margin-left: 4px; }
+    /* Responsive tweaks */
+    .table-wrapper { overflow-x: auto; border: 1px solid #333; border-radius: 8px; }
+    th, td { white-space: nowrap; }
   </style>
 </head>
 <body class="p-4">
@@ -53,7 +57,7 @@
   <div id="status" class="mb-4 text-sm text-gray-300"></div>
 
   <!-- Results Table -->
-  <div id="resultsContainer" class="hidden overflow-auto max-h-[500px]">
+  <div id="resultsContainer" class="hidden table-wrapper max-h-[500px]">
     <table class="min-w-full text-sm">
       <thead>
         <tr>
@@ -70,8 +74,9 @@
             Profit % (After Fee) <span class="sort-indicator"></span>
           </th>
           <th data-sort="score_liquidity">
-            Liquidity <span class="sort-indicator"></span>
+            Min Liquidity <span class="sort-indicator"></span>
           </th>
+          <th>Liquidity (Legs)</th>
         </tr>
       </thead>
       <tbody id="resultsBody"></tbody>
@@ -100,13 +105,16 @@
       data.forEach((opp, idx) => {
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td class="number-col">${idx + 1}</td>
+          <td class="number-col text-center">${idx + 1}</td>
           <td>${opp.triangle}</td>
           <td>${opp.pairs.join(", ")}</td>
-          <td>${opp.profit_before.toFixed(2)}%</td>
-          <td>${opp.fees.toFixed(2)}%</td>
-          <td>${opp.profit_after.toFixed(2)}%</td>
-          <td>${formatLiquidity(opp.score_liquidity)}</td>
+          <td class="text-right">${opp.profit_before.toFixed(2)}%</td>
+          <td class="text-right">${opp.fees.toFixed(2)}%</td>
+          <td class="text-right">${opp.profit_after.toFixed(2)}%</td>
+          <td class="text-right">${formatLiquidity(opp.score_liquidity)}</td>
+          <td class="text-right">
+            ${opp.liquidity_legs.map(l => formatLiquidity(l)).join(" / ")}
+          </td>
         `;
         resultsBody.appendChild(row);
       });
@@ -188,4 +196,4 @@
     });
   </script>
 </body>
-</html>
+        </html>
