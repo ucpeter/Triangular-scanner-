@@ -1,7 +1,8 @@
 use crate::models::PairPrice;
 use std::collections::HashMap;
+use serde::Serialize;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TriangularResult {
     pub triangle: (String, String, String),
     pub pairs: (PairPrice, PairPrice, PairPrice),
@@ -11,7 +12,7 @@ pub struct TriangularResult {
     pub liquidity_score: f64,
 }
 
-/// Static taker fees (as fractions, e.g. 0.001 = 0.1%)
+/// Static taker fees (fractions, e.g. 0.001 = 0.1%)
 fn exchange_fee(exchange: &str) -> f64 {
     match exchange {
         "binance" => 0.001,
@@ -22,27 +23,7 @@ fn exchange_fee(exchange: &str) -> f64 {
     }
 }
 
-/// Filter out unrealistic or illiquid pairs.
-fn filter_liquid_pairs(pairs: Vec<PairPrice>) -> Vec<PairPrice> {
-    pairs
-        .into_iter()
-        .filter(|p| p.price > 0.0 && p.price.is_finite())
-        .collect()
-}
-
-/// Very simple liquidity scoring function.
-fn liquidity_score(p1: &PairPrice, p2: &PairPrice, p3: &PairPrice) -> f64 {
-    // Right now just averages the inverse price (acts as proxy for affordability/liquidity).
-    // Later this could be extended with REST-based volume data.
-    let avg_price = (p1.price + p2.price + p3.price) / 3.0;
-    if avg_price > 0.0 {
-        1.0 / avg_price
-    } else {
-        0.0
-    }
-}
-
-/// Find triangular arbitrage opportunities with liquidity filter.
+/// Very simple triangular arbitrage finder with liquidity filter
 pub fn find_triangular_opportunities(
     exchange: &str,
     pairs: Vec<PairPrice>,
@@ -51,13 +32,13 @@ pub fn find_triangular_opportunities(
     let mut out: Vec<TriangularResult> = Vec::new();
     let fee_rate = exchange_fee(exchange);
 
-    let clean_pairs = filter_liquid_pairs(pairs);
+    // Build lookup: (base, quote) -> price
     let mut map: HashMap<(String, String), f64> = HashMap::new();
-    for p in &clean_pairs {
+    for p in &pairs {
         map.insert((p.base.clone(), p.quote.clone()), p.price);
     }
 
-    let symbols: Vec<String> = clean_pairs.iter().map(|p| p.base.clone()).collect();
+    let symbols: Vec<String> = pairs.iter().map(|p| p.base.clone()).collect();
 
     for a in &symbols {
         for b in &symbols {
@@ -65,6 +46,7 @@ pub fn find_triangular_opportunities(
             for c in &symbols {
                 if c == a || c == b { continue; }
 
+                // Path: A/B -> B/C -> C/A
                 if let (Some(p1), Some(p2), Some(p3)) = (
                     map.get(&(a.clone(), b.clone())),
                     map.get(&(b.clone(), c.clone())),
@@ -83,19 +65,23 @@ pub fn find_triangular_opportunities(
 
                         if profit_after > min_profit {
                             if let (Some(pp1), Some(pp2), Some(pp3)) = (
-                                clean_pairs.iter().find(|p| p.base == *a && p.quote == *b),
-                                clean_pairs.iter().find(|p| p.base == *b && p.quote == *c),
-                                clean_pairs.iter().find(|p| p.base == *c && p.quote == *a),
+                                pairs.iter().find(|p| p.base == *a && p.quote == *b),
+                                pairs.iter().find(|p| p.base == *b && p.quote == *c),
+                                pairs.iter().find(|p| p.base == *c && p.quote == *a),
                             ) {
-                                let liq_score = liquidity_score(pp1, pp2, pp3);
-                                out.push(TriangularResult {
-                                    triangle: (a.clone(), b.clone(), c.clone()),
-                                    pairs: (pp1.clone(), pp2.clone(), pp3.clone()),
-                                    profit_before,
-                                    fees,
-                                    profit_after,
-                                    liquidity_score: liq_score,
-                                });
+                                // crude liquidity score = average price, can be replaced with volume later
+                                let liquidity_score = (pp1.price + pp2.price + pp3.price) / 3.0;
+
+                                if liquidity_score > 0.0001 { // filter dust pairs
+                                    out.push(TriangularResult {
+                                        triangle: (a.clone(), b.clone(), c.clone()),
+                                        pairs: (pp1.clone(), pp2.clone(), pp3.clone()),
+                                        profit_before,
+                                        fees,
+                                        profit_after,
+                                        liquidity_score,
+                                    });
+                                }
                             }
                         }
                     }
@@ -104,12 +90,16 @@ pub fn find_triangular_opportunities(
         }
     }
 
-    // Sort primarily by profit_after, secondarily by liquidity_score
+    // Prioritize by liquidity first, then profit
     out.sort_by(|x, y| {
-        y.profit_after
-            .partial_cmp(&x.profit_after)
+        y.liquidity_score
+            .partial_cmp(&x.liquidity_score)
             .unwrap()
-            .then(y.liquidity_score.partial_cmp(&x.liquidity_score).unwrap())
+            .then(
+                y.profit_after
+                    .partial_cmp(&x.profit_after)
+                    .unwrap()
+            )
     });
 
     out
