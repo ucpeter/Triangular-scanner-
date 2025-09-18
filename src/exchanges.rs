@@ -6,6 +6,7 @@ use tokio_tungstenite::{connect_async};
 use tracing::{info, warn, error};
 
 /// Collect a snapshot of Binance spot tickers using WS only.
+/// Filters out pairs with quoteVolume <= 500000.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
     if exchange != "binance" {
         warn!("Exchange {} not supported in WS-only mode", exchange);
@@ -36,16 +37,16 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                             it.get("s").and_then(|v| v.as_str()),
                                             it.get("c").and_then(|v| v.as_str())
                                                        .and_then(|s| s.parse::<f64>().ok()),
-                                            it.get("v").and_then(|v| v.as_str())
+                                            it.get("q").and_then(|v| v.as_str())
                                                        .and_then(|s| s.parse::<f64>().ok()),
                                         ) {
-                                            if price > 0.0 {
+                                            // Only accept if quote volume > 500k
+                                            if price > 0.0 && vol > 500_000.0 {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
                                                         base,
                                                         quote,
                                                         price,
-                                                        volume: vol,
                                                         is_spot: true,
                                                     });
                                                 }
@@ -92,4 +93,4 @@ fn split_symbol(sym: &str) -> Option<(String, String)> {
         }
     }
     None
-                    }
+                                            }
