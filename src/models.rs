@@ -13,21 +13,11 @@ pub struct PairPrice {
 /// Result of a detected triangular arbitrage opportunity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriangularResult {
-    /// Human-readable triangle representation: A → B → C → A
     pub triangle: String,
-
-    /// The three trading pairs involved, formatted as ["A/B", "B/C", "C/A"]
     pub pairs: Vec<String>,
-
-    /// Gross profit before fees, as percentage.
     pub profit_before: f64,
-
-    /// Total fees applied (sum of per-leg fees).
     pub fees: f64,
-
-    /// Net profit after applying fees, as percentage.
     pub profit_after: f64,
-
-    /// Liquidity score, usually min(volume across 3 legs).
     pub score_liquidity: f64,
+    pub liquidity_legs: [f64; 3],   // NEW
 }
