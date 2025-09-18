@@ -5,15 +5,15 @@ use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{info, warn, error};
 
-/// Collect a snapshot of Binance spot tickers using WS only.
+/// Collect a snapshot of Binance spot tickers using WS only, filtering by volume.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
     if exchange != "binance" {
-        warn!("⚠️ Exchange {} not supported in WS-only mode", exchange);
+        warn!("Exchange {} not supported in WS-only mode", exchange);
         return Vec::new();
     }
 
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-    info!("🔌 Connecting to Binance WS at {}", url);
+    info!("Connecting to Binance WS at {}", url);
 
     let mut pairs: Vec<PairPrice> = Vec::new();
 
@@ -37,7 +37,18 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                              it.get("c").and_then(|v| v.as_str())
                                                         .and_then(|s| s.parse::<f64>().ok()))
                                         {
-                                            if price > 0.0 {
+                                            // Volumes
+                                            let base_vol = it.get("v")
+                                                .and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok())
+                                                .unwrap_or(0.0);
+
+                                            let quote_vol = it.get("q")
+                                                .and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok())
+                                                .unwrap_or(0.0);
+
+                                            if price > 0.0 && (base_vol > 500_000.0 || quote_vol > 500_000.0) {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
                                                         base,
@@ -45,8 +56,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                         price,
                                                         is_spot: true,
                                                     });
-                                                } else {
-                                                    warn!("⏭️ skipped symbol: {}", sym);
                                                 }
                                             }
                                         }
@@ -57,19 +66,19 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        error!("❌ binance ws error: {:?}", e);
+                        error!("binance ws error: {:?}", e);
                         break;
                     }
                 }
             }
         }
         Err(e) => {
-            error!("❌ binance connect error: {:?}", e);
+            error!("binance connect error: {:?}", e);
         }
     }
 
     info!(
-        "✅ scan complete for binance: collected {} pairs",
+        "scan complete for binance: collected {} pairs (filtered by volume > 500k)",
         pairs.len()
     );
 
