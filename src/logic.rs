@@ -1,95 +1,162 @@
-use crate::models::PairPrice;
-use std::collections::HashMap;
-use serde::Serialize;
+// src/logic.rs
+use crate::models::{PairPrice, TriangularResult};
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct TriangularResult {
-    pub triangle: (String, String, String),
-    pub pairs: (PairPrice, PairPrice, PairPrice),
-    pub profit_before: f64,
-    pub fees: f64,
-    pub profit_after: f64,
-}
-
-/// Static taker fees (fractions, e.g. 0.001 = 0.1%)
-fn exchange_fee(exchange: &str) -> f64 {
-    match exchange {
-        "binance" => 0.001,
-        "bybit"   => 0.001,
-        "gateio"  => 0.002,
-        "kucoin"  => 0.001,
-        _ => 0.001,
-    }
-}
-
-/// Triangular arbitrage finder
+/// find_triangular_opportunities
+/// - pairs: snapshot vector of PairPrice (base/quote/price/volume)
+/// - min_profit_after: minimum profit % after fees to include
+/// - fee_per_leg_pct: percent per trade leg (e.g., 0.1 for 0.1%)
+/// - neighbor_limit: per-base, keep only top-N outgoing neighbors by volume (liquidity)
 pub fn find_triangular_opportunities(
-    exchange: &str,
+    _exchange: &str,
     pairs: Vec<PairPrice>,
-    min_profit: f64,
+    min_profit_after: f64,
 ) -> Vec<TriangularResult> {
-    let mut out: Vec<TriangularResult> = Vec::new();
-    let fee_rate = exchange_fee(exchange);
+    let fee_per_leg_pct = 0.10; // default taker per-leg percent (0.10%); adjust if needed
+    let neighbor_limit = 100usize; // tune: how many top neighbors per node to consider
 
-    // Build lookup: (base, quote) -> price
-    let mut map: HashMap<(String, String), f64> = HashMap::new();
-    for p in &pairs {
-        map.insert((p.base.clone(), p.quote.clone()), p.price);
+    // Build adjacency: base -> (quote -> price)
+    let mut adj: HashMap<String, HashMap<String, f64>> = HashMap::new();
+    // Build liquidity map: base -> (quote -> volume)
+    let mut vol_map: HashMap<String, HashMap<String, f64>> = HashMap::new();
+
+    for p in pairs.iter() {
+        // prefer spot pairs only
+        if !p.is_spot || p.price <= 0.0 {
+            continue;
+        }
+        let a = p.base.to_uppercase();
+        let b = p.quote.to_uppercase();
+        // price a/b meaning: 1 a = price * b (we store as given)
+        adj.entry(a.clone()).or_default().insert(b.clone(), p.price);
+        // also store inverse for quick lookup (1/b -> a)
+        if p.price > 0.0 {
+            adj.entry(b.clone()).or_default().insert(a.clone(), 1.0 / p.price);
+        }
+        vol_map.entry(a.clone()).or_default().insert(b.clone(), p.volume);
+        vol_map.entry(b.clone()).or_default().insert(a.clone(), p.volume); // approximate inverse liquidity
     }
 
-    let symbols: Vec<String> = pairs.iter().map(|p| p.base.clone()).collect();
+    // Build neighbor lists limited by liquidity
+    let mut neighbors: HashMap<String, Vec<String>> = HashMap::new();
+    for (base, targets) in adj.iter() {
+        // sort targets by volume desc (use vol_map)
+        let mut vec: Vec<(String, f64)> = targets.iter().map(|(q, &price)| {
+            let v = vol_map.get(base).and_then(|m| m.get(q)).copied().unwrap_or(0.0);
+            (q.clone(), v)
+        }).collect();
 
-    for a in &symbols {
-        for b in &symbols {
-            if a == b { continue; }
-            for c in &symbols {
-                if c == a || c == b { continue; }
+        vec.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let list: Vec<String> = vec.into_iter()
+            .take(neighbor_limit)
+            .map(|(q, _v)| q)
+            .collect();
+        neighbors.insert(base.clone(), list);
+    }
 
-                // Test both directions: A→B→C→A and A→C→B→A
-                let directions = vec![
-                    ((a.clone(), b.clone()), (b.clone(), c.clone()), (c.clone(), a.clone())),
-                    ((a.clone(), c.clone()), (c.clone(), b.clone()), (b.clone(), a.clone())),
+    // Build predecessor sets (nodes that have outgoing edge to key)
+    let mut preds: HashMap<String, HashSet<String>> = HashMap::new();
+    for (u, m) in adj.iter() {
+        for v in m.keys() {
+            preds.entry(v.clone()).or_default().insert(u.clone());
+        }
+    }
+
+    // For dedupe, keep a set of canonical triangle keys
+    let mut seen: HashSet<(String,String,String)> = HashSet::new();
+    let mut out: Vec<TriangularResult> = Vec::new();
+
+    let fee_factor = (1.0 - fee_per_leg_pct / 100.0).powf(3.0); // multiplicative factor for 3 legs
+    let total_fee_pct = 3.0 * fee_per_leg_pct;
+
+    // Iterate nodes; for each A, iterate B in neighbors[A], then consider C in intersection(neighbors[B], preds[A])
+    for a in neighbors.keys() {
+        let neigh_a = neighbors.get(a).unwrap_or(&Vec::new()).clone();
+        for b in neigh_a.iter() {
+            // neighbors of B (limited) and preds of A -> intersection are candidates for C
+            let nb = neighbors.get(b).unwrap_or(&Vec::new());
+            let pred_a = preds.get(a).unwrap_or(&HashSet::new());
+
+            // build a HashSet for fast intersection
+            let nb_set: HashSet<&String> = nb.iter().collect();
+
+            for c in nb.iter() {
+                if c == a || c == b {
+                    continue;
+                }
+                if !pred_a.contains(c) {
+                    continue;
+                }
+
+                // Lookup rates r_ab, r_bc, r_ca
+                let r_ab = match adj.get(a).and_then(|m| m.get(b)) { Some(&v) => v, None => continue };
+                let r_bc = match adj.get(b).and_then(|m| m.get(c)) { Some(&v) => v, None => continue };
+                let r_ca = match adj.get(c).and_then(|m| m.get(a)) { Some(&v) => v, None => continue };
+
+                // compute gross cycle multiplier
+                let gross = r_ab * r_bc * r_ca;
+                if !gross.is_finite() { continue; }
+                let profit_before = (gross - 1.0) * 100.0;
+                if profit_before <= 0.0 {
+                    continue;
+                }
+
+                // apply fees multiplicatively across legs (approx)
+                let net = gross * fee_factor;
+                let profit_after = (net - 1.0) * 100.0;
+
+                if profit_after < min_profit_after {
+                    continue;
+                }
+
+                // compute liquidity score: min of the three volumes (conservative)
+                let v_ab = vol_map.get(a).and_then(|m| m.get(b)).copied().unwrap_or(0.0);
+                let v_bc = vol_map.get(b).and_then(|m| m.get(c)).copied().unwrap_or(0.0);
+                let v_ca = vol_map.get(c).and_then(|m| m.get(a)).copied().unwrap_or(0.0);
+                let liquidity_score = v_ab.min(v_bc).min(v_ca);
+
+                // dedupe: create canonical ordering (sorted triple) to avoid permutations
+                let mut triple = vec![a.clone(), b.clone(), c.clone()];
+                let key = {
+                    // canonical unique orientation: choose lexicographically smallest rotation
+                    let r1 = (triple[0].clone(), triple[1].clone(), triple[2].clone());
+                    let r2 = (triple[1].clone(), triple[2].clone(), triple[0].clone());
+                    let r3 = (triple[2].clone(), triple[0].clone(), triple[1].clone());
+                    let mut rots = vec![r1, r2, r3];
+                    rots.sort();
+                    rots[0].clone()
+                };
+
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+
+                let triangle_fmt = format!("{} → {} → {} → {}", a, b, c, a);
+                let pairs_fmt = vec![
+                    format!("{}/{}", a, b),
+                    format!("{}/{}", b, c),
+                    format!("{}/{}", c, a),
                 ];
 
-                for (p1, p2, p3) in directions {
-                    if let (Some(&r1), Some(&r2), Some(&r3)) =
-                        (map.get(&(p1.0.clone(), p1.1.clone())),
-                         map.get(&(p2.0.clone(), p2.1.clone())),
-                         map.get(&(p3.0.clone(), p3.1.clone())))
-                    {
-                        // Start with 1 unit
-                        let mut amount = 1.0;
-                        amount = amount / r1; // first trade
-                        amount = amount / r2; // second trade
-                        amount = amount * r3; // third trade
-
-                        let profit_before = (amount - 1.0) * 100.0;
-
-                        // Apply fee per leg (multiplicative)
-                        let after_fees = amount * (1.0 - fee_rate).powi(3);
-                        let profit_after = (after_fees - 1.0) * 100.0;
-
-                        if profit_after > min_profit {
-                            if let (Some(pp1), Some(pp2), Some(pp3)) = (
-                                pairs.iter().find(|p| p.base == p1.0 && p.quote == p1.1),
-                                pairs.iter().find(|p| p.base == p2.0 && p.quote == p2.1),
-                                pairs.iter().find(|p| p.base == p3.0 && p.quote == p3.1),
-                            ) {
-                                out.push(TriangularResult {
-                                    triangle: (p1.0.clone(), p2.0.clone(), p3.0.clone()),
-                                    pairs: (pp1.clone(), pp2.clone(), pp3.clone()),
-                                    profit_before,
-                                    fees: fee_rate * 100.0 * 3.0,
-                                    profit_after,
-                                });
-                            }
-                        }
-                    }
-                }
+                out.push(TriangularResult{
+                    triangle: triangle_fmt,
+                    pairs: pairs_fmt,
+                    profit_before: (profit_before as f64),
+                    fees: total_fee_pct,
+                    profit_after: (profit_after as f64),
+                    score_liquidity: liquidity_score,
+                });
             }
         }
     }
 
-    out.sort_by(|x, y| y.profit_after.partial_cmp(&x.profit_after).unwrap());
+    // sort by profit after descending, then by liquidity descending
+    out.sort_by(|x,y| {
+        match y.profit_after.partial_cmp(&x.profit_after).unwrap_or(std::cmp::Ordering::Equal) {
+            std::cmp::Ordering::Equal => y.score_liquidity.partial_cmp(&x.score_liquidity).unwrap_or(std::cmp::Ordering::Equal),
+            ord => ord,
+        }
+    });
+
     out
-                }
+        }
