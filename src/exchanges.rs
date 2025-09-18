@@ -1,99 +1,93 @@
 use crate::models::PairPrice;
-use futures_util::{StreamExt};
+use futures_util::StreamExt;
 use serde_json::Value;
-use std::collections::HashSet;
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::connect_async;
-use tracing::{info, warn};
+use tokio::time::{Duration, Instant};
+use tokio_tungstenite::{connect_async};
+use tracing::{info, warn, error};
 
-/// Collect snapshot of Binance spot tickers over `seconds` seconds using WS only
-pub async fn collect_binance_snapshot(seconds: u64) -> Vec<PairPrice> {
+/// Collect a snapshot of Binance spot tickers using WS only.
+pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
+    if exchange != "binance" {
+        warn!("Exchange {} not supported in WS-only mode", exchange);
+        return Vec::new();
+    }
+
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-    info!("Connecting to binance at {}", url);
+    info!("Connecting to Binance WS at {}", url);
 
-    let (ws_stream, _) = match connect_async(url).await {
-        Ok(res) => res,
-        Err(e) => {
-            warn!("binance connect error: {}", e);
-            return Vec::new();
-        }
-    };
+    let mut pairs: Vec<PairPrice> = Vec::new();
 
-    let (mut _write, mut read) = ws_stream.split();
+    match connect_async(url).await {
+        Ok((mut ws_stream, _)) => {
+            let deadline = Instant::now() + Duration::from_secs(seconds);
 
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    let mut elapsed = 0u64;
+            while let Some(msg) = ws_stream.next().await {
+                if Instant::now() >= deadline {
+                    break;
+                }
 
-    while elapsed < seconds {
-        if let Some(Ok(msg)) = read.next().await {
-            if let Ok(text) = msg.to_text() {
-                if let Ok(json) = serde_json::from_str::<Value>(text) {
-                    if let Some(arr) = json.as_array() {
-                        for it in arr {
-                            if let (Some(s), Some(p)) = (it.get("s"), it.get("c")) {
-                                if let (Some(symbol), Some(price)) = (s.as_str(), p.as_str()) {
-                                    // Skip futures or fiat-only pairs, keep spot
-                                    if symbol.len() < 6 {
-                                        continue;
-                                    }
-
-                                    let (base, quote) = split_symbol(symbol);
-                                    let key = format!("{}-{}", base, quote);
-
-                                    if seen.insert(key.clone()) {
-                                        if let Ok(px) = price.parse::<f64>() {
-                                            out.push(PairPrice {
-                                                base,
-                                                quote,
-                                                price: px,
-                                            });
+                if let Ok(m) = msg {
+                    if m.is_text() {
+                        if let Ok(txt) = m.into_text() {
+                            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                if let Value::Array(arr) = v {
+                                    for it in arr {
+                                        if let (Some(sym), Some(price), Some(vol)) = (
+                                            it.get("s").and_then(|v| v.as_str()),
+                                            it.get("c").and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok()),
+                                            it.get("v").and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok()),
+                                        ) {
+                                            if price > 0.0 {
+                                                if let Some((base, quote)) = split_symbol(sym) {
+                                                    pairs.push(PairPrice {
+                                                        base,
+                                                        quote,
+                                                        price,
+                                                        is_spot: true,
+                                                        volume: vol,
+                                                    });
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                } else if let Err(e) = msg {
+                    error!("binance ws error: {:?}", e);
+                    break;
                 }
             }
         }
-        sleep(Duration::from_secs(1)).await;
-        elapsed += 1;
+        Err(e) => {
+            error!("binance connect error: {:?}", e);
+        }
     }
 
     info!(
-        "binance collected {} unique pairs, seen_total={}, skipped={}",
-        out.len(),
-        seen.len(),
-        seen.len().saturating_sub(out.len())
+        "scan complete for binance: collected {} pairs",
+        pairs.len()
     );
-    out
+
+    pairs
 }
 
-/// Simple dynamic symbol splitter (no hardcoding, works for stablecoins & others)
-fn split_symbol(symbol: &str) -> (String, String) {
-    // Known quote suffixes (Binance spot)
-    const QUOTES: [&str; 9] = ["USDT","USDC","BUSD","FDUSD","TUSD","BTC","ETH","BNB","TRY"];
-
-    for q in QUOTES {
-        if symbol.ends_with(q) {
-            let base = symbol[..symbol.len()-q.len()].to_string();
-            return (base, q.to_string());
+/// Dynamically splits a Binance symbol into base/quote by trying known suffixes.
+fn split_symbol(sym: &str) -> Option<(String, String)> {
+    let suffixes = [
+        "USDT", "BUSD", "USDC", "FDUSD", "TUSD", "BTC", "ETH", "BNB", "TRY", "EUR", "GBP",
+        "AUD", "BRL", "CAD", "ARS", "RUB", "ZAR", "NGN", "UAH", "IDR", "JPY", "KRW", "VND",
+        "INR", "MXN", "PLN", "SEK", "CHF",
+    ];
+    let s = sym.to_uppercase();
+    for suf in &suffixes {
+        if s.ends_with(suf) && s.len() > suf.len() {
+            let base = s[..s.len() - suf.len()].to_string();
+            return Some((base, suf.to_string()));
         }
     }
-
-    // Fallback: split last 3 chars
-    let (b, q) = symbol.split_at(symbol.len().saturating_sub(3));
-    (b.to_string(), q.to_string())
-}
-
-/// Wrapper so routes.rs can stay unchanged
-pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
-    match exchange.to_lowercase().as_str() {
-        "binance" => collect_binance_snapshot(seconds).await,
-        other => {
-            warn!("Exchange {} not yet supported", other);
-            Vec::new()
-        }
-    }
-                                        }
+    None
+                                            }
