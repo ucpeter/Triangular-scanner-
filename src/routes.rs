@@ -35,7 +35,14 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
                     collect_exchange_snapshot(&exch, req.collect_seconds).await;
                 info!("{}: collected {} pairs", exch, pairs.len());
 
-                let opps = find_triangular_opportunities(&exch, pairs, req.min_profit);
+                let opps = find_triangular_opportunities(
+                    &exch,
+                    pairs,
+                    req.min_profit,
+                    0.10,  // fee per leg %
+                    100,   // neighbor limit
+                );
+
                 info!("{}: found {} opportunities", exch, opps.len());
                 opps
             }
@@ -48,4 +55,4 @@ async fn scan_handler(Json(req): Json<ScanRequest>) -> Json<Vec<TriangularResult
     info!("scan complete: {} total opportunities", results.len());
 
     Json(results)
-}
+            }
