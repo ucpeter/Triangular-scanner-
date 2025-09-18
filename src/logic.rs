@@ -1,4 +1,4 @@
-use crate::models::{PairPrice, TriangularResult};
+use crate::models::{PairPrice};
 use std::collections::{HashMap, HashSet};
 
 /// Find triangular arbitrage opportunities.
