@@ -2,10 +2,10 @@ use crate::models::PairPrice;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::time::{Duration, Instant};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{connect_async};
 use tracing::{info, warn, error};
 
-/// Collect a snapshot of Binance spot tickers using WS only, filtering by volume.
+/// Collect a snapshot of Binance spot tickers using WS only.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
     if exchange != "binance" {
         warn!("Exchange {} not supported in WS-only mode", exchange);
@@ -32,28 +32,20 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 if let Value::Array(arr) = v {
                                     for it in arr {
-                                        if let (Some(sym), Some(price)) =
-                                            (it.get("s").and_then(|v| v.as_str()),
-                                             it.get("c").and_then(|v| v.as_str())
-                                                        .and_then(|s| s.parse::<f64>().ok()))
-                                        {
-                                            // Volumes
-                                            let base_vol = it.get("v")
-                                                .and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok())
-                                                .unwrap_or(0.0);
-
-                                            let quote_vol = it.get("q")
-                                                .and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok())
-                                                .unwrap_or(0.0);
-
-                                            if price > 0.0 && (base_vol > 500_000.0 || quote_vol > 500_000.0) {
+                                        if let (Some(sym), Some(price), Some(vol)) = (
+                                            it.get("s").and_then(|v| v.as_str()),
+                                            it.get("c").and_then(|v| v.as_str())
+                                                       .and_then(|s| s.parse::<f64>().ok()),
+                                            it.get("v").and_then(|v| v.as_str())
+                                                       .and_then(|s| s.parse::<f64>().ok()),
+                                        ) {
+                                            if price > 0.0 {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
                                                         base,
                                                         quote,
                                                         price,
+                                                        volume: vol,
                                                         is_spot: true,
                                                     });
                                                 }
@@ -78,7 +70,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
     }
 
     info!(
-        "scan complete for binance: collected {} pairs (filtered by volume > 500k)",
+        "scan complete for binance: collected {} pairs",
         pairs.len()
     );
 
@@ -100,4 +92,4 @@ fn split_symbol(sym: &str) -> Option<(String, String)> {
         }
     }
     None
-                                }
+                    }
