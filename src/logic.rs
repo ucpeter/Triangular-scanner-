@@ -131,13 +131,15 @@ pub fn find_triangular_opportunities(
                     format!("{}/{}", c, a),
                 ];
 
-                out.push(TriangularResult {
-                    triangle: triangle_fmt,
-                    pairs: pairs_fmt,
-                    profit_before,
-                    fees: total_fee_pct,
-                    profit_after,
-                    score_liquidity: liquidity_score,
+                 out.push(TriangularResult {
+    triangle: triangle_fmt,
+    pairs: pairs_fmt,
+    profit_before,
+    fees: total_fee_pct,
+    profit_after,
+    score_liquidity: liquidity_score,
+    liquidity_legs: [v_ab, v_bc, v_ca],   // NEW: pass per-leg volumes
+                     
                 });
             }
         }
