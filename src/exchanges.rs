@@ -32,13 +32,16 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 if let Value::Array(arr) = v {
                                     for it in arr {
-                                        if let (Some(sym), Some(price), Some(vol)) = (
-                                            it.get("s").and_then(|v| v.as_str()),
-                                            it.get("c").and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok()),
-                                            it.get("v").and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok()),
-                                        ) {
+                                        if let (Some(sym), Some(price)) =
+                                            (it.get("s").and_then(|v| v.as_str()),
+                                             it.get("c").and_then(|v| v.as_str())
+                                                        .and_then(|s| s.parse::<f64>().ok()))
+                                        {
+                                            // Optional volume field
+                                            let vol = it.get("v")
+                                                .and_then(|v| v.as_str())
+                                                .and_then(|s| s.parse::<f64>().ok());
+
                                             if price > 0.0 {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
@@ -46,7 +49,7 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                         quote,
                                                         price,
                                                         is_spot: true,
-                                                        volume: vol,
+                                                        volume: vol, // ✅ now matches Option<f64>
                                                     });
                                                 }
                                             }
@@ -56,9 +59,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                             }
                         }
                     }
-                } else if let Err(e) = msg {
-                    error!("binance ws error: {:?}", e);
-                    break;
                 }
             }
         }
@@ -90,4 +90,4 @@ fn split_symbol(sym: &str) -> Option<(String, String)> {
         }
     }
     None
-                                            }
+                                        }
