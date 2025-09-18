@@ -2,6 +2,8 @@
 use crate::models::{PairPrice, TriangularResult};
 use std::collections::{HashMap, HashSet};
 
+
+pub use crate::models::TriangularResult;
 /// find_triangular_opportunities
 /// - pairs: snapshot vector of PairPrice (base/quote/price/volume/is_spot)
 /// - min_profit_after: minimum profit % after fees to include
