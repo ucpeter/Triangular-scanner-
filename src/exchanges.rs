@@ -1,19 +1,20 @@
 use crate::models::PairPrice;
-use futures_util::{StreamExt, SinkExt};
+use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{info, warn, error};
+use colored::*;
 
 /// Collect a snapshot of Binance spot tickers using WS only.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
     if exchange != "binance" {
-        warn!("Exchange {} not supported in WS-only mode", exchange);
+        warn!("{}", format!("Exchange {} not supported in WS-only mode", exchange).yellow());
         return Vec::new();
     }
 
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-    info!("Connecting to Binance WS at {}", url);
+    info!("{}", format!("Connecting to Binance WS at {}", url).blue());
 
     let mut pairs: Vec<PairPrice> = Vec::new();
 
@@ -32,12 +33,14 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 if let Value::Array(arr) = v {
                                     for it in arr {
-                                        if let (Some(sym), Some(price)) =
-                                            (it.get("s").and_then(|v| v.as_str()),
-                                             it.get("c").and_then(|v| v.as_str())
-                                                        .and_then(|s| s.parse::<f64>().ok()))
-                                        {
-                                            if price > 0.0 {
+                                        if let (Some(sym), Some(price), Some(volume)) = (
+                                            it.get("s").and_then(|v| v.as_str()),
+                                            it.get("c").and_then(|v| v.as_str())
+                                                       .and_then(|s| s.parse::<f64>().ok()),
+                                            it.get("q").and_then(|v| v.as_str())
+                                                       .and_then(|s| s.parse::<f64>().ok()), // 24h quote volume
+                                        ) {
+                                            if price > 0.0 && volume > 0.0 {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
                                                         base,
@@ -55,20 +58,23 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        error!("binance ws error: {:?}", e);
+                        error!("{}", format!("binance ws error: {:?}", e).red());
                         break;
                     }
                 }
             }
         }
         Err(e) => {
-            error!("binance connect error: {:?}", e);
+            error!("{}", format!("binance connect error: {:?}", e).red());
         }
     }
 
+    // Sort by liquidity (descending quote volume)
+    pairs.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+
     info!(
-        "scan complete for binance: collected {} pairs",
-        pairs.len()
+        "{}",
+        format!("scan complete for binance: collected {} pairs", pairs.len()).green()
     );
 
     pairs
@@ -89,4 +95,4 @@ fn split_symbol(sym: &str) -> Option<(String, String)> {
         }
     }
     None
-                                    }
+            }
