@@ -2,18 +2,18 @@ use crate::models::PairPrice;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::time::{Duration, Instant};
-use tokio_tungstenite::{connect_async};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{info, warn, error};
 
 /// Collect a snapshot of Binance spot tickers using WS only.
 pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<PairPrice> {
     if exchange != "binance" {
-        warn!("Exchange {} not supported in WS-only mode", exchange);
+        warn!("⚠️ Exchange {} not supported in WS-only mode", exchange);
         return Vec::new();
     }
 
     let url = "wss://stream.binance.com:9443/ws/!ticker@arr";
-    info!("Connecting to Binance WS at {}", url);
+    info!("🔌 Connecting to Binance WS at {}", url);
 
     let mut pairs: Vec<PairPrice> = Vec::new();
 
@@ -26,8 +26,8 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                     break;
                 }
 
-                if let Ok(m) = msg {
-                    if m.is_text() {
+                match msg {
+                    Ok(m) if m.is_text() => {
                         if let Ok(txt) = m.into_text() {
                             if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                                 if let Value::Array(arr) = v {
@@ -37,11 +37,6 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                              it.get("c").and_then(|v| v.as_str())
                                                         .and_then(|s| s.parse::<f64>().ok()))
                                         {
-                                            // Optional volume field
-                                            let vol = it.get("v")
-                                                .and_then(|v| v.as_str())
-                                                .and_then(|s| s.parse::<f64>().ok());
-
                                             if price > 0.0 {
                                                 if let Some((base, quote)) = split_symbol(sym) {
                                                     pairs.push(PairPrice {
@@ -49,8 +44,9 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                                                         quote,
                                                         price,
                                                         is_spot: true,
-                                                        volume: vol, // ✅ now matches Option<f64>
                                                     });
+                                                } else {
+                                                    warn!("⏭️ skipped symbol: {}", sym);
                                                 }
                                             }
                                         }
@@ -59,16 +55,21 @@ pub async fn collect_exchange_snapshot(exchange: &str, seconds: u64) -> Vec<Pair
                             }
                         }
                     }
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("❌ binance ws error: {:?}", e);
+                        break;
+                    }
                 }
             }
         }
         Err(e) => {
-            error!("binance connect error: {:?}", e);
+            error!("❌ binance connect error: {:?}", e);
         }
     }
 
     info!(
-        "scan complete for binance: collected {} pairs",
+        "✅ scan complete for binance: collected {} pairs",
         pairs.len()
     );
 
@@ -90,4 +91,4 @@ fn split_symbol(sym: &str) -> Option<(String, String)> {
         }
     }
     None
-                                        }
+                                }
