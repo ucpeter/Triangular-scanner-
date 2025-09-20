@@ -7,18 +7,31 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { background-color: #1e1e1e; color: #f0f0f0; }
-    th { background-color: #1e40af; cursor: pointer; }
-    table { border-collapse: collapse; }
-    td, th { border: 1px solid #333; padding: 10px; }
+    th { background-color: #1e40af; cursor: pointer; color: white; }
+    table { border-collapse: collapse; font-size: 0.85rem; }
+    td, th { border: 1px solid #333; padding: 6px 10px; }
     tbody tr:nth-child(odd) { background-color: #2a2a2a; }
     tbody tr:nth-child(even) { background-color: #1f2937; }
     tbody tr:hover { background-color: #374151; }
     .number-col { position: sticky; left: 0; background: #111827; z-index: 2; }
     thead th { position: sticky; top: 0; z-index: 3; }
     .sort-indicator { margin-left: 4px; }
-    /* Responsive tweaks */
-    .table-wrapper { overflow-x: auto; border: 1px solid #333; border-radius: 8px; }
+    .table-wrapper { 
+      overflow-x: auto; 
+      overflow-y: auto; 
+      max-height: 500px; 
+      border: 1px solid #333; 
+      border-radius: 8px;
+    }
     th, td { white-space: nowrap; }
+    /* tighter spacing between Pairs and Profit Before Fee */
+    td.pairs-col, th.pairs-col,
+    td.profit-before-col, th.profit-before-col {
+      padding-right: 6px;
+      padding-left: 6px;
+    }
+    .profit-positive { color: #4ade80; font-weight: 600; }
+    .profit-negative { color: #f87171; font-weight: 600; }
   </style>
 </head>
 <body class="p-4">
@@ -40,11 +53,6 @@
       <input id="minProfit" type="number" value="0" step="0.1"
         class="bg-gray-800 p-2 rounded w-full md:w-40"/>
     </div>
-    <div>
-      <label class="block text-sm">Collect Window (seconds)</label>
-      <input id="collectSeconds" type="number" value="5" min="1"
-        class="bg-gray-800 p-2 rounded w-full md:w-40"/>
-    </div>
     <div class="flex items-end">
       <button id="scanBtn"
         class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-white">
@@ -57,23 +65,23 @@
   <div id="status" class="mb-4 text-sm text-gray-300"></div>
 
   <!-- Results Table -->
-  <div id="resultsContainer" class="hidden table-wrapper max-h-[500px]">
+  <div id="resultsContainer" class="hidden table-wrapper">
     <table class="min-w-full text-sm">
       <thead>
         <tr>
           <th class="number-col">#</th>
           <th>Triangle</th>
-          <th>Pairs</th>
-          <th data-sort="profit_before">
+          <th class="pairs-col">Pairs</th>
+          <th class="profit-before-col" data-sort="profit_before_fees">
             Profit % (Before Fee) <span class="sort-indicator"></span>
           </th>
-          <th data-sort="fees">
+          <th data-sort="trade_fees">
             Fees % <span class="sort-indicator"></span>
           </th>
-          <th data-sort="profit_after">
+          <th data-sort="profit_after_fees">
             Profit % (After Fee) <span class="sort-indicator"></span>
           </th>
-          <th data-sort="score_liquidity">
+          <th data-sort="min_liquidity">
             Min Liquidity <span class="sort-indicator"></span>
           </th>
           <th>Liquidity (Legs)</th>
@@ -90,10 +98,10 @@
     const resultsBody = document.getElementById("resultsBody");
 
     let currentData = [];
-    let sortConfig = { key: "profit_after", asc: false }; // default sort
+    let sortConfig = { key: "profit_after_fees", asc: false };
 
-    // Format liquidity nicely
     function formatLiquidity(val) {
+      if (!val || isNaN(val)) return "-";
       if (val >= 1_000_000_000) return (val / 1_000_000_000).toFixed(2) + "B";
       if (val >= 1_000_000) return (val / 1_000_000).toFixed(2) + "M";
       if (val >= 1_000) return (val / 1_000).toFixed(2) + "K";
@@ -107,13 +115,15 @@
         row.innerHTML = `
           <td class="number-col text-center">${idx + 1}</td>
           <td>${opp.triangle}</td>
-          <td>${opp.pairs.join(", ")}</td>
-          <td class="text-right">${opp.profit_before.toFixed(2)}%</td>
-          <td class="text-right">${opp.fees.toFixed(2)}%</td>
-          <td class="text-right">${opp.profit_after.toFixed(2)}%</td>
-          <td class="text-right">${formatLiquidity(opp.score_liquidity)}</td>
+          <td class="pairs-col">${opp.pairs}</td>
+          <td class="profit-before-col text-right">${opp.profit_before_fees.toFixed(2)}%</td>
+          <td class="text-right">${opp.trade_fees.toFixed(2)}%</td>
+          <td class="text-right ${opp.profit_after_fees >= 0 ? "profit-positive" : "profit-negative"}">
+            ${opp.profit_after_fees.toFixed(2)}%
+          </td>
+          <td class="text-right">${formatLiquidity(opp.min_liquidity || 0)}</td>
           <td class="text-right">
-            ${opp.liquidity_legs.map(l => formatLiquidity(l)).join(" / ")}
+            ${(opp.leg_liquidities || []).map(l => formatLiquidity(l)).join(" / ")}
           </td>
         `;
         resultsBody.appendChild(row);
@@ -125,11 +135,7 @@
         const key = th.getAttribute("data-sort");
         const span = th.querySelector(".sort-indicator");
         if (!span) return;
-        if (sortConfig.key === key) {
-          span.textContent = sortConfig.asc ? "▲" : "▼";
-        } else {
-          span.textContent = "";
-        }
+        span.textContent = sortConfig.key === key ? (sortConfig.asc ? "▲" : "▼") : "";
       });
     }
 
@@ -146,7 +152,6 @@
       updateSortIndicators();
     }
 
-    // Attach click handlers for sorting
     document.querySelectorAll("th[data-sort]").forEach(th => {
       th.addEventListener("click", () => {
         const key = th.getAttribute("data-sort");
@@ -160,11 +165,9 @@
       });
     });
 
-    // Handle Scan button click
     scanBtn.addEventListener("click", async () => {
       const exchange = document.getElementById("exchange").value;
       const minProfit = parseFloat(document.getElementById("minProfit").value);
-      const collectSeconds = parseInt(document.getElementById("collectSeconds").value);
 
       statusEl.textContent = `Scanning ${exchange}...`;
       resultsContainer.classList.add("hidden");
@@ -174,7 +177,7 @@
         const res = await fetch("/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ exchanges: [exchange], min_profit: minProfit, collect_seconds: collectSeconds })
+          body: JSON.stringify({ exchanges: [exchange], min_profit: minProfit })
         });
 
         if (!res.ok) {
@@ -183,11 +186,11 @@
         }
 
         const data = await res.json();
-        statusEl.textContent = `Scan complete. Found ${data.length} opportunities.`;
+        statusEl.textContent = `Scan complete. Found ${data.results.length} opportunities.`;
 
-        if (data.length > 0) {
+        if (data.results.length > 0) {
           resultsContainer.classList.remove("hidden");
-          currentData = data;
+          currentData = data.results;
           sortAndRender();
         }
       } catch (err) {
@@ -196,4 +199,4 @@
     });
   </script>
 </body>
-        </html>
+            </html>
